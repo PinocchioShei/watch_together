@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Watch Together Local</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260319d" />
+  </head>
+  <body>
+    <div class="page auth-only">
+      <header class="topbar">
+        <h1>Watch Together</h1>
+        <div class="topbar-right">
+          <div id="userBadge" class="user-badge hidden"></div>
+          <button id="logoutBtn" class="danger hidden">Logout</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section id="authPanel" class="card auth-card">
+          <h2>Login / Register</h2>
+          <div class="tabs">
+            <button id="tabLogin" class="tab active">Login</button>
+            <button id="tabRegister" class="tab">Register</button>
+          </div>
+
+          <form id="loginForm" class="form">
+            <label>Username <input id="loginUsername" required minlength="3" /></label>
+            <label>Password <input id="loginPassword" required minlength="6" type="password" /></label>
+            <button type="submit">Login</button>
+          </form>
+
+          <form id="registerForm" class="form hidden">
+            <label>Username <input id="registerUsername" required minlength="3" /></label>
+            <label>Password <input id="registerPassword" required minlength="6" type="password" /></label>
+            <button type="submit">Register</button>
+          </form>
+
+          <p id="authMsg" class="msg"></p>
+        </section>
+
+        <section id="appPanel" class="hidden">
+          <section id="lobbyPanel" class="card">
+            <div class="section-title">
+              <h3>Choose Room</h3>
+              <button id="refreshRooms">Refresh</button>
+            </div>
+            <form id="createRoomForm" class="inline-form">
+              <input id="roomName" placeholder="New room name" minlength="2" maxlength="60" required />
+              <button type="submit">Create</button>
+            </form>
+            <p id="lobbyStatus" class="status">Create a room or join an existing one.</p>
+            <ul id="roomList" class="room-list"></ul>
+          </section>
+
+          <section id="roomPanel" class="card hidden">
+            <div class="section-title">
+              <h3 id="currentRoomTitle">Room</h3>
+              <button id="leaveRoomBtn">Leave Room</button>
+            </div>
+
+            <div class="room-content">
+              <div class="video-column">
+                <form id="videoUrlForm" class="inline-form">
+                  <input id="videoUrlInput" placeholder="Video URL (mp4/webm/ogg)" />
+                  <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov" />
+                  <button type="submit">Load</button>
+                </form>
+                <p class="status">Tip: local files need upload first, browser cannot play raw Windows file paths.</p>
+
+                <video id="videoPlayer" controls preload="metadata"></video>
+                <p id="statusBar" class="status">Idle</p>
+              </div>
+
+              <div class="chat-column chat-wrap">
+                <h4>Room Chat</h4>
+                <div id="chatBox" class="chat-box"></div>
+                <form id="chatForm" class="inline-form">
+                  <input id="chatInput" maxlength="400" placeholder="Say something..." />
+                  <button type="submit">Send</button>
+                </form>
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js?v=20260319h" defer></script>
+  </body>
+</html>

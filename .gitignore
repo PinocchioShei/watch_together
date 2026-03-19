@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+
+watch_together.db
+media/
+
+log/debug/*.log
+
+sample_hevc.mp4
