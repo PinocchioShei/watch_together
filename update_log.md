@@ -31,3 +31,27 @@
 - Fixed cross-user auto-enter issue by storing active room recovery state in per-tab storage instead of shared local storage.
 - Updated logout behavior to best-effort leave current room before logging out, so owner logout also cleans room.
 - Bumped frontend script version (`app.js?v=20260319h`) to ensure latest client logic is loaded.
+
+## 2026-03-19 18:22
+- Fixed seek-while-playing sync edge case: when remote side jumps time and should continue playing, playback now resumes after `seeked` completion with a fallback retry.
+- Prevented post-seek paused state divergence between clients during active playback synchronization.
+- Bumped frontend script version (`app.js?v=20260319i`) for cache-safe rollout.
+
+## 2026-03-19 18:27
+- Fixed root cause of seek desync: remote-applied `seeked/pause/play` events were being mistaken for local user actions and re-broadcasting stale paused state.
+- Added `remoteApplyUntil` guard window to suppress local action takeover during remote state application.
+- Bumped frontend script version (`app.js?v=20260319j`) to force fresh client script loading.
+
+## 2026-03-19 18:52
+- Switched playback source model to media-library-only: room sync now accepts only `/media/*` URLs.
+- Added backend media listing endpoint `GET /api/media` and media URL validation in WebSocket sync path.
+- Updated room UI with a left media library picker (scrollable list + refresh) and synchronized media switching across users.
+- Changed local video import flow to "import only": uploads/transcodes into `media/` without auto-loading the video.
+- Added per-item media metadata display (filename + size) and active media highlight in room UI.
+- Bumped static asset versions (`styles.css?v=20260319k`, `app.js?v=20260319k`).
+
+## 2026-03-19 19:10
+- Tuned early-room sync behavior: local user actions are now ignored only while `suppressVideoEvents` is active, removing false lockouts right after join.
+- Increased remote-apply suppression window to reduce immediate rebound on first seek/pause/play after entering a room.
+- Improved high-resolution UI layout: widened page/auth/lobby containers and expanded main video area so side panels no longer overly compress playback.
+- Updated static asset versions (`styles.css?v=20260319l`, `app.js?v=20260319l`).

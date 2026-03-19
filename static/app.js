@@ -10,6 +10,8 @@ const state = {
   roomDisplayNo: null,
   localOverrideUntil: 0,
   roomMeta: new Map(),
+  mediaLibrary: [],
+  activeMediaUrl: "",
   localActionCounter: 0,
   lastLocalActionId: 0,
   lastServerUpdatedAt: 0,
@@ -37,8 +39,10 @@ const lobbyPanel = document.getElementById("lobbyPanel");
 const roomPanel = document.getElementById("roomPanel");
 const currentRoomTitle = document.getElementById("currentRoomTitle");
 const videoPlayer = document.getElementById("videoPlayer");
-const videoUrlForm = document.getElementById("videoUrlForm");
-const videoUrlInput = document.getElementById("videoUrlInput");
+const refreshMediaBtn = document.getElementById("refreshMediaBtn");
+const mediaList = document.getElementById("mediaList");
+const mediaStatus = document.getElementById("mediaStatus");
+const importForm = document.getElementById("importForm");
 const videoFileInput = document.getElementById("videoFileInput");
 const statusBar = document.getElementById("statusBar");
 const userBadge = document.getElementById("userBadge");
@@ -100,12 +104,27 @@ function setLobbyStatus(msg, isError = false) {
   lobbyStatus.style.color = isError ? "#fca5a5" : "#94a3b8";
 }
 
+function setMediaStatus(msg, isError = false) {
+  mediaStatus.textContent = msg || "";
+  mediaStatus.style.color = isError ? "#fca5a5" : "#94a3b8";
+}
+
 function normalizeUrl(url) {
   if (!url) return "";
   try {
     return new URL(url, location.origin).href;
   } catch {
     return String(url);
+  }
+}
+
+function toMediaPath(url) {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url, location.origin);
+    return parsed.pathname.startsWith("/media/") ? parsed.pathname : "";
+  } catch {
+    return String(url).startsWith("/media/") ? String(url) : "";
   }
 }
 
@@ -126,6 +145,50 @@ function readRoomSession() {
 
 function clearRoomSession() {
   sessionStorage.removeItem(ROOM_SESSION_KEY);
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+}
+
+function renderMediaLibrary() {
+  mediaList.innerHTML = "";
+  if (!state.mediaLibrary.length) {
+    const li = document.createElement("li");
+    li.textContent = "No media files in library.";
+    mediaList.appendChild(li);
+    return;
+  }
+  state.mediaLibrary.forEach((item) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    if (state.activeMediaUrl && normalizeUrl(state.activeMediaUrl) === normalizeUrl(item.url)) {
+      btn.classList.add("active");
+    }
+    btn.textContent = `${item.name}  |  ${formatBytes(item.size)}`;
+    btn.onclick = async () => {
+      state.forceTakeover = true;
+      state.localOverrideUntil = Date.now() + 1200;
+      state.activeMediaUrl = item.url;
+      videoPlayer.src = item.url;
+      videoPlayer.currentTime = 0;
+      await videoPlayer.play().catch(() => {});
+      sendSync();
+      renderMediaLibrary();
+      setMediaStatus(`Selected: ${item.name}`);
+    };
+    li.appendChild(btn);
+    mediaList.appendChild(li);
+  });
+}
+
+async function loadMediaLibrary() {
+  const data = await api("/api/media", { method: "GET" });
+  state.mediaLibrary = data.items || [];
+  renderMediaLibrary();
 }
 
 function showTab(which) {
@@ -223,6 +286,7 @@ function enterLobbyView(clearSavedRoom = true) {
   state.controllerUserId = null;
   state.roomDisplayNo = null;
   state.forceTakeover = false;
+  state.activeMediaUrl = "";
   state.localOverrideUntil = 0;
   state.localActionCounter = 0;
   state.lastLocalActionId = 0;
@@ -322,6 +386,9 @@ async function joinRoom(roomId, roomName, displayNo = null) {
   saveRoomSession(roomId, roomName, finalDisplayNo);
   enterRoomView(roomName, roomId, finalDisplayNo);
   statusBar.textContent = "Joining room...";
+  setMediaStatus("Loading media library...");
+  await loadMediaLibrary();
+  setMediaStatus("Select a media file to play and sync.");
   safeCloseWs();
   connectWs(roomId);
   const rs = await api(`/api/rooms/${roomId}/state`, { method: "GET" });
@@ -346,6 +413,8 @@ function connectWs(roomId) {
     const data = JSON.parse(event.data);
     if (data.type === "state") {
       applyRemoteState(data, data.by || "peer");
+    } else if (data.type === "error") {
+      statusBar.textContent = data.message || "Room sync error.";
     } else if (data.type === "room_deleted") {
       alert(`Room "${data.roomName || ""}" was closed by ${data.by || "owner"}. Returning to room list.`);
       safeCloseWs();
@@ -420,20 +489,36 @@ function applyRemoteState(data, by) {
   }
 
   const incomingUrl = normalizeUrl(data.videoUrl || "");
+  if (!incomingUrl) {
+    state.activeMediaUrl = "";
+    renderMediaLibrary();
+  }
   const currentUrl = normalizeUrl(videoPlayer.getAttribute("src") || videoPlayer.currentSrc || "");
   if (incomingUrl && currentUrl !== incomingUrl) {
+    state.activeMediaUrl = data.videoUrl;
     videoPlayer.src = incomingUrl;
+    renderMediaLibrary();
   }
 
   const drift = Math.abs((videoPlayer.currentTime || 0) - (data.currentTime || 0));
+  let jumpedBySeek = false;
   if (drift > 1.2) {
+    jumpedBySeek = true;
     videoPlayer.currentTime = data.currentTime || 0;
   }
 
   if (data.isPlaying) {
-    videoPlayer.play().catch(() => {
-      statusBar.textContent = "Playback blocked by browser policy. Click play once to enable sync playback.";
-    });
+    const ensurePlay = () => {
+      videoPlayer.play().catch(() => {
+        statusBar.textContent = "Playback blocked by browser policy. Click play once to enable sync playback.";
+      });
+    };
+    if (jumpedBySeek) {
+      videoPlayer.addEventListener("seeked", ensurePlay, { once: true });
+      setTimeout(ensurePlay, 120);
+    } else {
+      ensurePlay();
+    }
   } else {
     videoPlayer.pause();
   }
@@ -442,7 +527,7 @@ function applyRemoteState(data, by) {
   statusBar.textContent = `Synced by ${by}. t=${(data.currentTime || 0).toFixed(1)}s, controller: ${controllerText}`;
   setTimeout(() => {
     state.suppressVideoEvents = false;
-  }, 120);
+  }, 260);
 }
 
 function sendSync() {
@@ -454,10 +539,14 @@ function sendSync() {
   if (!canPush) return;
   const actionId = ++state.localActionCounter;
   state.lastLocalActionId = actionId;
+  const mediaPath =
+    toMediaPath(videoPlayer.currentSrc) ||
+    toMediaPath(videoPlayer.src) ||
+    toMediaPath(state.activeMediaUrl);
   const payload = {
     type: "sync",
     actionId,
-    videoUrl: videoPlayer.currentSrc || videoPlayer.src || videoUrlInput.value.trim() || "",
+    videoUrl: mediaPath,
     currentTime: Number(videoPlayer.currentTime || 0),
     isPlaying: !videoPlayer.paused,
   };
@@ -472,6 +561,9 @@ function scheduleSync() {
 }
 
 function onLocalPlaybackAction() {
+  if (state.suppressVideoEvents) {
+    return;
+  }
   state.forceTakeover = true;
   state.localOverrideUntil = Date.now() + 1200;
   scheduleSync();
@@ -553,37 +645,37 @@ refreshRoomsBtn.onclick = async () => {
   }
 };
 
-videoUrlForm.onsubmit = async (e) => {
+importForm.onsubmit = async (e) => {
   e.preventDefault();
-  if (!state.roomId) {
-    statusBar.textContent = "Join a room first.";
+  if (!videoFileInput.files || !videoFileInput.files[0]) {
+    setMediaStatus("Choose a local video first.", true);
     return;
   }
-
-  if (videoFileInput.files && videoFileInput.files[0]) {
-    try {
-      statusBar.textContent = "Uploading local video...";
-      const fd = new FormData();
-      fd.append("file", videoFileInput.files[0]);
-      const upload = await api("/api/upload-video", { method: "POST", body: fd });
-      videoUrlInput.value = upload.url;
-      videoFileInput.value = "";
-      const profile = upload.profile || {};
-      const transcodeText = upload.transcoded ? "transcoded to H.264/AAC MP4" : "already browser-friendly";
-      statusBar.textContent = `Upload complete (${profile.container || "unknown"}/${profile.videoCodec || "unknown"}/${profile.audioCodec || "none"}, ${transcodeText}), syncing...`;
-    } catch (err) {
-      statusBar.textContent = `Upload failed: ${err.message}`;
-      return;
-    }
+  try {
+    setMediaStatus("Importing video into library...");
+    const fd = new FormData();
+    fd.append("file", videoFileInput.files[0]);
+    const upload = await api("/api/upload-video", { method: "POST", body: fd });
+    videoFileInput.value = "";
+    const profile = upload.profile || {};
+    const transcodeText = upload.transcoded ? "transcoded to H.264/AAC MP4" : "already browser-friendly";
+    setMediaStatus(
+      `Imported (${profile.container || "unknown"}/${profile.videoCodec || "unknown"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
+    );
+    await loadMediaLibrary();
+  } catch (err) {
+    setMediaStatus(`Import failed: ${err.message}`, true);
   }
+};
 
-  const url = videoUrlInput.value.trim();
-  if (!url) return;
-  state.forceTakeover = true;
-  state.localOverrideUntil = Date.now() + 1200;
-  videoPlayer.src = url;
-  videoPlayer.currentTime = 0;
-  sendSync();
+refreshMediaBtn.onclick = async () => {
+  try {
+    setMediaStatus("Refreshing media library...");
+    await loadMediaLibrary();
+    setMediaStatus("Media library updated.");
+  } catch (err) {
+    setMediaStatus(err.message, true);
+  }
 };
 
 ["play", "pause", "seeked", "ratechange"].forEach((evt) => {

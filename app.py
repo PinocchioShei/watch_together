@@ -22,6 +22,7 @@ DB_PATH = BASE_DIR / "watch_together.db"
 STATIC_DIR = BASE_DIR / "static"
 MEDIA_DIR = BASE_DIR / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+ALLOWED_MEDIA_EXTENSIONS = {".mp4", ".webm", ".ogg", ".mov"}
 
 
 def now_utc() -> datetime:
@@ -34,6 +35,43 @@ def dt_to_str(value: datetime) -> str:
 
 def str_to_dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def media_url_from_name(name: str) -> str:
+    return f"/media/{name}"
+
+
+def is_valid_media_url(url: str) -> bool:
+    if not url:
+        return True
+    if not url.startswith("/media/"):
+        return False
+    name = url.removeprefix("/media/")
+    if not name or "/" in name or "\\" in name:
+        return False
+    suffix = Path(name).suffix.lower()
+    return suffix in ALLOWED_MEDIA_EXTENSIONS
+
+
+def list_media_library() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for path in MEDIA_DIR.iterdir():
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in ALLOWED_MEDIA_EXTENSIONS:
+            continue
+        stat = path.stat()
+        items.append(
+            {
+                "name": path.name,
+                "url": media_url_from_name(path.name),
+                "size": stat.st_size,
+                "updatedAt": dt_to_str(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
+            }
+        )
+    items.sort(key=lambda item: item["updatedAt"], reverse=True)
+    return items
 
 
 def hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
@@ -365,6 +403,12 @@ def me(user: User = Depends(require_user)):
     return {"id": user.id, "username": user.username}
 
 
+@app.get("/api/media")
+def media_library(user: User = Depends(require_user)):
+    del user
+    return {"items": list_media_library()}
+
+
 @app.get("/api/rooms")
 def list_rooms(user: User = Depends(require_user)):
     conn = db_conn()
@@ -466,9 +510,10 @@ def room_state(room_id: int, user: User = Depends(require_user)):
         ).fetchone()
         if not state:
             raise HTTPException(status_code=404, detail="State not found")
+        safe_video_url = state["video_url"] if is_valid_media_url(state["video_url"]) else ""
         can_control = state["controller_user_id"] in (None, user.id)
         return {
-            "videoUrl": state["video_url"],
+            "videoUrl": safe_video_url,
             "currentTime": state["current_time_sec"],
             "isPlaying": bool(state["is_playing"]),
             "updatedAt": state["updated_at"],
@@ -560,9 +605,8 @@ async def leave_room(room_id: int, user: User = Depends(require_user)):
 @app.post("/api/upload-video")
 async def upload_video(file: UploadFile = File(...), user: User = Depends(require_user)):
     del user
-    allowed_ext = {".mp4", ".webm", ".ogg", ".mov"}
     suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in allowed_ext:
+    if suffix not in ALLOWED_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only mp4/webm/ogg/mov files are supported")
 
     ensure_ffmpeg_tools()
@@ -595,9 +639,10 @@ async def upload_video(file: UploadFile = File(...), user: User = Depends(requir
         raw_path.replace(final_path)
         return {
             "ok": True,
-            "url": f"/media/{final_name}",
+            "url": media_url_from_name(final_name),
             "profile": profile,
             "transcoded": False,
+            "imported": True,
         }
 
     final_name = f"playable_{int(now_utc().timestamp())}_{secrets.token_hex(8)}.mp4"
@@ -641,9 +686,10 @@ async def upload_video(file: UploadFile = File(...), user: User = Depends(requir
 
     return {
         "ok": True,
-        "url": f"/media/{final_name}",
+        "url": media_url_from_name(final_name),
         "profile": profile,
         "transcoded": True,
+        "imported": True,
     }
 
 
@@ -687,11 +733,12 @@ async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):
             (room_id,),
         ).fetchone()
         init_conn.close()
+        initial_video_url = state["video_url"] if (state and is_valid_media_url(state["video_url"])) else ""
         await websocket.send_text(
             json.dumps(
                 {
                     "type": "state",
-                    "videoUrl": state["video_url"] if state else "",
+                    "videoUrl": initial_video_url,
                     "currentTime": state["current_time_sec"] if state else 0,
                     "isPlaying": bool(state["is_playing"]) if state else False,
                     "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
@@ -709,6 +756,16 @@ async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):
             if msg_type == "sync":
                 action_id = int(payload.get("actionId", 0))
                 video_url = str(payload.get("videoUrl", "")).strip()[:500]
+                if not is_valid_media_url(video_url):
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "message": "Only videos under /media are allowed",
+                            }
+                        )
+                    )
+                    continue
                 current_time = max(float(payload.get("currentTime", 0)), 0)
                 is_playing = bool(payload.get("isPlaying", False))
 

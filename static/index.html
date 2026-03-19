@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Local</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260319d" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260319l" />
   </head>
   <body>
     <div class="page auth-only">
@@ -19,6 +19,7 @@
       <main class="layout">
         <section id="authPanel" class="card auth-card">
           <h2>Login / Register</h2>
+          <p class="status">Create your account or sign in to enter the room lobby.</p>
           <div class="tabs">
             <button id="tabLogin" class="tab active">Login</button>
             <button id="tabRegister" class="tab">Register</button>
@@ -60,14 +61,23 @@
             </div>
 
             <div class="room-content">
-              <div class="video-column">
-                <form id="videoUrlForm" class="inline-form">
-                  <input id="videoUrlInput" placeholder="Video URL (mp4/webm/ogg)" />
-                  <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov" />
-                  <button type="submit">Load</button>
-                </form>
-                <p class="status">Tip: local files need upload first, browser cannot play raw Windows file paths.</p>
+              <aside class="media-column">
+                <div class="section-title compact">
+                  <h4>Media Library</h4>
+                  <button id="refreshMediaBtn">Refresh</button>
+                </div>
+                <ul id="mediaList" class="media-list"></ul>
+                <p id="mediaStatus" class="status">Select a media file to play and sync.</p>
 
+                <form id="importForm" class="inline-form import-form">
+                  <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov" />
+                  <button type="submit">Import To Library</button>
+                </form>
+                <p class="status">Import converts local files if needed and saves them into `media/`.</p>
+              </aside>
+
+              <div class="video-column">
+                
                 <video id="videoPlayer" controls preload="metadata"></video>
                 <p id="statusBar" class="status">Idle</p>
               </div>
@@ -86,6 +96,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260319h" defer></script>
+    <script src="/static/app.js?v=20260319l" defer></script>
   </body>
 </html>
