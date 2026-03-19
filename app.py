@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import json
+import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -22,7 +24,16 @@ DB_PATH = BASE_DIR / "watch_together.db"
 STATIC_DIR = BASE_DIR / "static"
 MEDIA_DIR = BASE_DIR / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-ALLOWED_MEDIA_EXTENSIONS = {".mp4", ".webm", ".ogg", ".mov"}
+MEDIA_VIDEO_DIR = MEDIA_DIR / "video"
+MEDIA_AUDIO_DIR = MEDIA_DIR / "audio"
+MEDIA_TMP_DIR = MEDIA_DIR / "tmp"
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".webm", ".ogg", ".mov"}
+ALLOWED_AUDIO_EXTENSIONS = {".m4a", ".mp3", ".ogg", ".wav", ".aac"}
+ADMIN_USERNAME = os.getenv("WATCH_ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.getenv("WATCH_ADMIN_PASSWORD", "admin123")
+ADMIN_SESSION_TTL = timedelta(hours=12)
+
+ADMIN_TOKENS: dict[str, datetime] = {}
 
 
 def now_utc() -> datetime:
@@ -37,8 +48,37 @@ def str_to_dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def media_url_from_name(name: str) -> str:
-    return f"/media/{name}"
+def media_url_from_name(kind: str, name: str) -> str:
+    return f"/media/{kind}/{name}"
+
+
+def sanitize_filename_stem(name: str) -> str:
+    stem = (name or "").strip()
+    stem = re.sub(r"[<>:\"/\\|?*\x00-\x1f]", "_", stem)
+    stem = stem.strip(" .")
+    stem = re.sub(r"\s+", " ", stem)
+    if not stem:
+        stem = "media"
+    return stem[:64]
+
+
+def allocate_media_stem(original_stem: str) -> str:
+    base = sanitize_filename_stem(original_stem)
+    pattern = re.compile(rf"^{re.escape(base)}_(\d+)$")
+
+    max_no = 0
+    for directory, ext_set in ((MEDIA_VIDEO_DIR, ALLOWED_VIDEO_EXTENSIONS), (MEDIA_AUDIO_DIR, ALLOWED_AUDIO_EXTENSIONS)):
+        if not directory.exists():
+            continue
+        for path in directory.iterdir():
+            if not path.is_file() or path.suffix.lower() not in ext_set:
+                continue
+            m = pattern.match(path.stem)
+            if m:
+                max_no = max(max_no, int(m.group(1)))
+
+    next_no = max_no + 1
+    return f"{base}_{next_no:03d}"
 
 
 def is_valid_media_url(url: str) -> bool:
@@ -46,30 +86,107 @@ def is_valid_media_url(url: str) -> bool:
         return True
     if not url.startswith("/media/"):
         return False
-    name = url.removeprefix("/media/")
-    if not name or "/" in name or "\\" in name:
+    rel = url.removeprefix("/media/")
+    if not rel:
+        return False
+    parts = rel.split("/")
+    if len(parts) != 2:
+        return False
+    kind, name = parts
+    if kind not in {"video", "audio"} or not name or "/" in name or "\\" in name:
         return False
     suffix = Path(name).suffix.lower()
-    return suffix in ALLOWED_MEDIA_EXTENSIONS
+    if kind == "video":
+        return suffix in ALLOWED_VIDEO_EXTENSIONS
+    return suffix in ALLOWED_AUDIO_EXTENSIONS
 
 
-def list_media_library() -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for path in MEDIA_DIR.iterdir():
-        if not path.is_file():
-            continue
-        suffix = path.suffix.lower()
-        if suffix not in ALLOWED_MEDIA_EXTENSIONS:
-            continue
-        stat = path.stat()
-        items.append(
-            {
-                "name": path.name,
-                "url": media_url_from_name(path.name),
+def collect_media_files() -> dict[str, dict[str, Any]]:
+    audio_by_stem: dict[str, dict[str, Any]] = {}
+    if MEDIA_AUDIO_DIR.exists():
+        for path in MEDIA_AUDIO_DIR.iterdir():
+            if not path.is_file() or path.suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
+                continue
+            stat = path.stat()
+            audio_by_stem[path.stem] = {
+                "audioUrl": media_url_from_name("audio", path.name),
                 "size": stat.st_size,
                 "updatedAt": dt_to_str(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
             }
+
+    files: dict[str, dict[str, Any]] = {}
+    if MEDIA_VIDEO_DIR.exists():
+        for path in MEDIA_VIDEO_DIR.iterdir():
+            if not path.is_file() or path.suffix.lower() not in ALLOWED_VIDEO_EXTENSIONS:
+                continue
+            stat = path.stat()
+            stem = path.stem
+            files[stem] = {
+                "videoUrl": media_url_from_name("video", path.name),
+                "audioUrl": (audio_by_stem.get(stem) or {}).get("audioUrl", ""),
+                "size": stat.st_size,
+                "updatedAt": dt_to_str(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
+            }
+
+    for stem, audio_meta in audio_by_stem.items():
+        if stem in files:
+            continue
+        files[stem] = {
+            "videoUrl": "",
+            "audioUrl": audio_meta["audioUrl"],
+            "size": audio_meta["size"],
+            "updatedAt": audio_meta["updatedAt"],
+        }
+    return files
+
+
+def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    file_index = collect_media_files()
+    rows = conn.execute(
+        """
+        SELECT id, title, video_url, audio_url, duration, size, updated_at
+        FROM media_assets
+        ORDER BY updated_at DESC
+        """
+    ).fetchall()
+    items: list[dict[str, Any]] = []
+    seen_stems: set[str] = set()
+
+    for row in rows:
+        video_url = row["video_url"] or ""
+        video_name = Path(video_url).name
+        stem = Path(video_name).stem
+        file_meta = file_index.get(stem)
+        if not file_meta:
+            continue
+        seen_stems.add(stem)
+        items.append(
+            {
+                "id": row["id"],
+                "name": row["title"] or stem,
+                "videoUrl": file_meta["videoUrl"],
+                "audioUrl": file_meta["audioUrl"] or row["audio_url"] or "",
+                "duration": row["duration"] or 0,
+                "size": file_meta["size"],
+                "updatedAt": file_meta["updatedAt"],
+            }
         )
+
+    for stem, file_meta in file_index.items():
+        if stem in seen_stems:
+            continue
+        items.append(
+            {
+                "id": None,
+                "name": stem,
+                "videoUrl": file_meta["videoUrl"],
+                "audioUrl": file_meta["audioUrl"],
+                "duration": 0,
+                "size": file_meta["size"],
+                "updatedAt": file_meta["updatedAt"],
+            }
+        )
+
     items.sort(key=lambda item: item["updatedAt"], reverse=True)
     return items
 
@@ -112,6 +229,20 @@ class LoginPayload(BaseModel):
 
 class RoomPayload(BaseModel):
     name: str = Field(min_length=2, max_length=60)
+
+
+class AdminLoginPayload(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AdminCreateUserPayload(BaseModel):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
+    password: str = Field(min_length=6, max_length=128)
+
+
+class AdminUpdateUserPayload(BaseModel):
+    password: str = Field(min_length=6, max_length=128)
 
 
 @dataclass
@@ -160,6 +291,16 @@ hub = RoomConnectionHub()
 
 def init_db() -> None:
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    MEDIA_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    MEDIA_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    MEDIA_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    for path in MEDIA_DIR.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in ALLOWED_VIDEO_EXTENSIONS:
+            target = MEDIA_VIDEO_DIR / path.name
+            if not target.exists():
+                path.replace(target)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -209,6 +350,17 @@ def init_db() -> None:
             FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
             FOREIGN KEY (controller_user_id) REFERENCES users(id) ON DELETE SET NULL,
             FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS media_assets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            video_url TEXT NOT NULL UNIQUE,
+            audio_url TEXT,
+            duration REAL NOT NULL DEFAULT 0,
+            size INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         """
     )
@@ -332,9 +484,188 @@ def require_user(request: Request) -> User:
         conn.close()
 
 
+def create_admin_session_token() -> str:
+    token = secrets.token_urlsafe(32)
+    ADMIN_TOKENS[token] = now_utc() + ADMIN_SESSION_TTL
+    return token
+
+
+def cleanup_admin_tokens() -> None:
+    expired = [token for token, exp in ADMIN_TOKENS.items() if exp < now_utc()]
+    for token in expired:
+        ADMIN_TOKENS.pop(token, None)
+
+
+def require_admin(request: Request) -> str:
+    token = extract_bearer_token(request)
+    cleanup_admin_tokens()
+    if not token or token not in ADMIN_TOKENS:
+        raise HTTPException(status_code=401, detail="Admin auth required")
+    return token
+
+
+def stem_from_media_url(url: str) -> str:
+    return Path(url).stem
+
+
+def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[\w\-\u4e00-\u9fff\s\.]+", stem):
+        raise HTTPException(status_code=400, detail="Invalid media key")
+
+    deleted_files: list[str] = []
+    for directory, ext_set in ((MEDIA_VIDEO_DIR, ALLOWED_VIDEO_EXTENSIONS), (MEDIA_AUDIO_DIR, ALLOWED_AUDIO_EXTENSIONS)):
+        if not directory.exists():
+            continue
+        for path in directory.iterdir():
+            if not path.is_file() or path.suffix.lower() not in ext_set:
+                continue
+            if path.stem == stem:
+                path.unlink(missing_ok=True)
+                deleted_files.append(str(path.name))
+
+    rows = conn.execute("SELECT id, video_url FROM media_assets").fetchall()
+    delete_ids = [row["id"] for row in rows if stem_from_media_url(row["video_url"] or "") == stem]
+    if delete_ids:
+        conn.executemany("DELETE FROM media_assets WHERE id = ?", [(mid,) for mid in delete_ids])
+    conn.commit()
+
+    return {"deletedFiles": deleted_files, "deletedAssetRows": len(delete_ids)}
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/admin")
+def admin_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "admin.html")
+
+
+@app.post("/api/admin/login")
+def admin_login(payload: AdminLoginPayload):
+    if payload.username != ADMIN_USERNAME or payload.password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin credentials")
+    token = create_admin_session_token()
+    return {"ok": True, "token": token}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(request: Request):
+    token = extract_bearer_token(request)
+    if token:
+        ADMIN_TOKENS.pop(token, None)
+    return {"ok": True}
+
+
+@app.get("/api/admin/overview")
+def admin_overview(_: str = Depends(require_admin)):
+    conn = db_conn()
+    try:
+        users = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        rooms = conn.execute("SELECT COUNT(*) AS c FROM rooms").fetchone()["c"]
+        sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()["c"]
+        media_rows = conn.execute("SELECT COUNT(*) AS c FROM media_assets").fetchone()["c"]
+    finally:
+        conn.close()
+    file_index = collect_media_files()
+    return {
+        "users": users,
+        "rooms": rooms,
+        "sessions": sessions,
+        "mediaDbRows": media_rows,
+        "mediaScanned": len(file_index),
+    }
+
+
+@app.get("/api/admin/users")
+def admin_users(_: str = Depends(require_admin)):
+    conn = db_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, username, created_at FROM users ORDER BY id DESC"
+        ).fetchall()
+        return {"items": [{"id": r["id"], "username": r["username"], "createdAt": r["created_at"]} for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/users")
+def admin_create_user(payload: AdminCreateUserPayload, _: str = Depends(require_admin)):
+    conn = db_conn()
+    try:
+        exists = conn.execute("SELECT id FROM users WHERE username = ?", (payload.username,)).fetchone()
+        if exists:
+            raise HTTPException(status_code=409, detail="Username already exists")
+        salt, password_hash = hash_password(payload.password)
+        conn.execute(
+            "INSERT INTO users(username, password_salt, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (payload.username, salt, password_hash, dt_to_str(now_utc())),
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/admin/users/{user_id}")
+def admin_update_user(user_id: int, payload: AdminUpdateUserPayload, _: str = Depends(require_admin)):
+    conn = db_conn()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        salt, password_hash = hash_password(payload.password)
+        conn.execute(
+            "UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?",
+            (salt, password_hash, user_id),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int, _: str = Depends(require_admin)):
+    conn = db_conn()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.get("/api/admin/media")
+def admin_media(_: str = Depends(require_admin)):
+    conn = db_conn()
+    try:
+        items = list_media_library(conn)
+    finally:
+        conn.close()
+    for item in items:
+        item["mediaKey"] = stem_from_media_url(item["videoUrl"] or item["audioUrl"])
+    return {"items": items}
+
+
+@app.delete("/api/admin/media/{media_key}")
+def admin_delete_media(media_key: str, _: str = Depends(require_admin)):
+    conn = db_conn()
+    try:
+        result = remove_media_by_stem(conn, media_key)
+        return {"ok": True, **result}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/import")
+async def admin_import(file: UploadFile = File(...), _: str = Depends(require_admin)):
+    return await import_media_file(file)
 
 
 @app.post("/api/register")
@@ -406,7 +737,11 @@ def me(user: User = Depends(require_user)):
 @app.get("/api/media")
 def media_library(user: User = Depends(require_user)):
     del user
-    return {"items": list_media_library()}
+    conn = db_conn()
+    try:
+        return {"items": list_media_library(conn)}
+    finally:
+        conn.close()
 
 
 @app.get("/api/rooms")
@@ -511,9 +846,11 @@ def room_state(room_id: int, user: User = Depends(require_user)):
         if not state:
             raise HTTPException(status_code=404, detail="State not found")
         safe_video_url = state["video_url"] if is_valid_media_url(state["video_url"]) else ""
+        play_mode = "audio" if safe_video_url.startswith("/media/audio/") else "video"
         can_control = state["controller_user_id"] in (None, user.id)
         return {
             "videoUrl": safe_video_url,
+            "playMode": play_mode,
             "currentTime": state["current_time_sec"],
             "isPlaying": bool(state["is_playing"]),
             "updatedAt": state["updated_at"],
@@ -602,17 +939,17 @@ async def leave_room(room_id: int, user: User = Depends(require_user)):
     return {"ok": True, "roomDeleted": deleted}
 
 
-@app.post("/api/upload-video")
-async def upload_video(file: UploadFile = File(...), user: User = Depends(require_user)):
-    del user
+async def import_media_file(file: UploadFile) -> dict[str, Any]:
     suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in ALLOWED_MEDIA_EXTENSIONS:
+    if suffix not in ALLOWED_VIDEO_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only mp4/webm/ogg/mov files are supported")
 
     ensure_ffmpeg_tools()
 
-    raw_name = f"raw_{int(now_utc().timestamp())}_{secrets.token_hex(8)}{suffix}"
-    raw_path = MEDIA_DIR / raw_name
+    source_stem = Path(file.filename or "media").stem
+    media_stem = allocate_media_stem(source_stem)
+    raw_name = f"raw_{media_stem}_{secrets.token_hex(4)}{suffix}"
+    raw_path = MEDIA_TMP_DIR / raw_name
     max_size = 1024 * 1024 * 1024
     size = 0
 
@@ -632,43 +969,53 @@ async def upload_video(file: UploadFile = File(...), user: User = Depends(requir
 
     probe_result = await asyncio.to_thread(probe_media, raw_path)
     profile = extract_media_profile(probe_result)
-
-    if is_browser_friendly_mp4(profile):
-        final_name = raw_name.replace("raw_", "playable_", 1)
-        final_path = MEDIA_DIR / final_name
-        raw_path.replace(final_path)
-        return {
-            "ok": True,
-            "url": media_url_from_name(final_name),
-            "profile": profile,
-            "transcoded": False,
-            "imported": True,
-        }
-
-    final_name = f"playable_{int(now_utc().timestamp())}_{secrets.token_hex(8)}.mp4"
-    final_path = MEDIA_DIR / final_name
+    duration = 0.0
+    try:
+        duration = float((probe_result.get("format") or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
     streams = probe_result.get("streams") or []
     has_audio = any(s.get("codec_type") == "audio" for s in streams)
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(raw_path),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-    ]
-    if has_audio:
-        cmd += ["-c:a", "aac", "-b:a", "128k"]
+    video_name = f"{media_stem}.mp4"
+    video_path = MEDIA_VIDEO_DIR / video_name
+    audio_name = f"{media_stem}.m4a"
+    audio_path = MEDIA_AUDIO_DIR / audio_name
+
+    if is_browser_friendly_mp4(profile):
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(raw_path),
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy" if has_audio else "aac",
+            "-movflags",
+            "+faststart",
+            str(video_path),
+        ]
     else:
-        cmd += ["-an"]
-    cmd += ["-movflags", "+faststart", str(final_path)]
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(raw_path),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+        ]
+        if has_audio:
+            cmd += ["-c:a", "aac", "-b:a", "128k"]
+        else:
+            cmd += ["-an"]
+        cmd += ["-movflags", "+faststart", str(video_path)]
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
@@ -680,17 +1027,73 @@ async def upload_video(file: UploadFile = File(...), user: User = Depends(requir
     raw_path.unlink(missing_ok=True)
 
     if process.returncode != 0:
-        final_path.unlink(missing_ok=True)
+        video_path.unlink(missing_ok=True)
         detail = stderr.decode("utf-8", errors="ignore")[-400:]
         raise HTTPException(status_code=500, detail=f"Transcode failed: {detail or 'unknown error'}")
 
+    audio_url = ""
+    if has_audio:
+        audio_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            str(audio_path),
+        ]
+        audio_proc = await asyncio.create_subprocess_exec(
+            *audio_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, audio_stderr = await audio_proc.communicate()
+        if audio_proc.returncode == 0:
+            audio_url = media_url_from_name("audio", audio_name)
+        else:
+            audio_path.unlink(missing_ok=True)
+            _ = audio_stderr
+
+    title = sanitize_filename_stem(Path(file.filename or video_name).stem)
+    now_str = dt_to_str(now_utc())
+    conn = db_conn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO media_assets(title, video_url, audio_url, duration, size, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                title,
+                media_url_from_name("video", video_name),
+                audio_url,
+                duration,
+                video_path.stat().st_size,
+                now_str,
+                now_str,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
     return {
         "ok": True,
-        "url": media_url_from_name(final_name),
+        "videoUrl": media_url_from_name("video", video_name),
+        "audioUrl": audio_url,
         "profile": profile,
-        "transcoded": True,
+        "transcoded": not is_browser_friendly_mp4(profile),
         "imported": True,
     }
+
+
+@app.post("/api/upload-video")
+async def upload_video(file: UploadFile = File(...), user: User = Depends(require_user)):
+    del user
+    return await import_media_file(file)
 
 
 def ensure_room_member(room_id: int, user_id: int, conn: sqlite3.Connection) -> None:
@@ -734,11 +1137,13 @@ async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):
         ).fetchone()
         init_conn.close()
         initial_video_url = state["video_url"] if (state and is_valid_media_url(state["video_url"])) else ""
+        initial_play_mode = "audio" if initial_video_url.startswith("/media/audio/") else "video"
         await websocket.send_text(
             json.dumps(
                 {
                     "type": "state",
                     "videoUrl": initial_video_url,
+                    "playMode": initial_play_mode,
                     "currentTime": state["current_time_sec"] if state else 0,
                     "isPlaying": bool(state["is_playing"]) if state else False,
                     "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
@@ -756,12 +1161,15 @@ async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):
             if msg_type == "sync":
                 action_id = int(payload.get("actionId", 0))
                 video_url = str(payload.get("videoUrl", "")).strip()[:500]
+                play_mode = str(payload.get("playMode", "video")).strip().lower()
+                if play_mode not in {"video", "audio"}:
+                    play_mode = "audio" if video_url.startswith("/media/audio/") else "video"
                 if not is_valid_media_url(video_url):
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "type": "error",
-                                "message": "Only videos under /media are allowed",
+                                "message": "Only media files under /media are allowed",
                             }
                         )
                     )
@@ -801,6 +1209,7 @@ async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):
                     {
                         "type": "state",
                         "videoUrl": video_url,
+                        "playMode": play_mode,
                         "currentTime": current_time,
                         "isPlaying": is_playing,
                         "updatedAt": dt_to_str(now_utc()),

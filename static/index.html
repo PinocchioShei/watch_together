@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Local</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260319l" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260319m" />
   </head>
   <body>
     <div class="page auth-only">
@@ -57,7 +57,13 @@
           <section id="roomPanel" class="card hidden">
             <div class="section-title">
               <h3 id="currentRoomTitle">Room</h3>
-              <button id="leaveRoomBtn">Leave Room</button>
+              <div class="room-actions">
+                <div class="mode-switch" id="modeSwitch">
+                  <button id="modeVideoBtn" class="active" type="button">Video Mode</button>
+                  <button id="modeAudioBtn" type="button">Audio Mode</button>
+                </div>
+                <button id="leaveRoomBtn">Leave Room</button>
+              </div>
             </div>
 
             <div class="room-content">
@@ -73,12 +79,15 @@
                   <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov" />
                   <button type="submit">Import To Library</button>
                 </form>
-                <p class="status">Import converts local files if needed and saves them into `media/`.</p>
+                <p class="status">Import saves video to `media/video` and extracted audio to `media/audio`.</p>
               </aside>
 
               <div class="video-column">
-                
                 <video id="videoPlayer" controls preload="metadata"></video>
+                <div id="audioPanel" class="audio-panel hidden">
+                  <div class="audio-hero">Audio Together</div>
+                  <audio id="audioPlayer" controls preload="metadata"></audio>
+                </div>
                 <p id="statusBar" class="status">Idle</p>
               </div>
 
@@ -96,6 +105,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260319l" defer></script>
+    <script src="/static/app.js?v=20260319m" defer></script>
   </body>
 </html>

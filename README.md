@@ -4,11 +4,12 @@ A lightweight watch-together demo:
 
 - multi-user register/login
 - room creation and join
-- real-time sync of play/pause/seek via WebSocket
+- real-time sync of play/pause/seek + playback mode (video/audio) via WebSocket
 - room chat
-- upload local video and auto transcode to browser-playable MP4 (H.264/AAC)
+- media library playback (`media/video`, `media/audio`)
+- upload local video and auto transcode/import to library (video + extracted audio)
+- admin dashboard for user/media CRUD and import management
 - single-session login per account (new login invalidates old session)
-- playback control lock in room (only controller can push sync)
 - room owner can delete room
 - SQLite persistence
 
@@ -25,12 +26,21 @@ Open browser:
 
 - http://127.0.0.1:8080
 
+Admin dashboard (new port):
+
+- http://127.0.0.1:8091/admin
+
+Default admin credentials (change via env for production):
+
+- username: `admin`
+- password: `admin123`
+
 ## 2) Let friends access
 
 Use a tunnel on local 8080, for example (Cloudflare/ngrok). Then share the tunnel URL.
 
 ## Notes
 
-- For best sync, use direct video files (`.mp4/.webm/.ogg`) accessible to all users.
+- Imported media is stored in `media/video` and `media/audio`.
 - Requires `ffmpeg` and `ffprobe` installed in PATH for auto-transcode.
 - This is a practical MVP and can be extended to HLS/DASH, JWT, Redis pubsub, etc.

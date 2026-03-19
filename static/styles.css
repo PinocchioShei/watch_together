@@ -160,6 +160,22 @@ button.danger:hover {
   margin-bottom: 10px;
 }
 
+.room-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mode-switch {
+  display: flex;
+  gap: 6px;
+}
+
+.mode-switch button {
+  width: auto;
+  min-width: 110px;
+}
+
 .room-list {
   list-style: none;
   padding: 0;
@@ -229,6 +245,44 @@ button.danger:hover {
 
 .video-column {
   min-width: 0;
+}
+
+#roomPanel.audio-mode .video-column video {
+  display: none;
+}
+
+.audio-panel {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(145deg, #0b1220, #141e31);
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.audio-hero {
+  border-radius: 10px;
+  border: 1px dashed #334155;
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  color: #a5b4fc;
+  font-size: 22px;
+  letter-spacing: 0.5px;
+  background: radial-gradient(circle at 30% 30%, #1e293b, #0f172a 60%);
+}
+
+#roomPanel.audio-mode .audio-panel {
+  display: grid !important;
+}
+
+#roomPanel.audio-mode .room-content {
+  grid-template-columns: 240px minmax(0, 1fr) 320px;
+}
+
+.audio-panel audio {
+  width: 100%;
 }
 
 .chat-column {
@@ -303,6 +357,11 @@ video {
   .chat-box {
     min-height: 180px;
     max-height: 260px;
+  }
+
+  .room-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   video {

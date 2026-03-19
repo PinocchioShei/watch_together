@@ -12,6 +12,8 @@ const state = {
   roomMeta: new Map(),
   mediaLibrary: [],
   activeMediaUrl: "",
+  activeMediaId: null,
+  playMode: "video",
   localActionCounter: 0,
   lastLocalActionId: 0,
   lastServerUpdatedAt: 0,
@@ -39,6 +41,9 @@ const lobbyPanel = document.getElementById("lobbyPanel");
 const roomPanel = document.getElementById("roomPanel");
 const currentRoomTitle = document.getElementById("currentRoomTitle");
 const videoPlayer = document.getElementById("videoPlayer");
+const audioPlayer = document.getElementById("audioPlayer");
+const modeVideoBtn = document.getElementById("modeVideoBtn");
+const modeAudioBtn = document.getElementById("modeAudioBtn");
 const refreshMediaBtn = document.getElementById("refreshMediaBtn");
 const mediaList = document.getElementById("mediaList");
 const mediaStatus = document.getElementById("mediaStatus");
@@ -154,6 +159,57 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
 }
 
+function getActivePlayer() {
+  return state.playMode === "audio" ? audioPlayer : videoPlayer;
+}
+
+function getInactivePlayer() {
+  return state.playMode === "audio" ? videoPlayer : audioPlayer;
+}
+
+function resolveMediaUrlForMode(item, mode) {
+  if (!item) return "";
+  if (mode === "audio") {
+    return item.audioUrl || "";
+  }
+  return item.videoUrl || "";
+}
+
+function setPlayMode(mode, { silent = false } = {}) {
+  const nextMode = mode === "audio" ? "audio" : "video";
+  if (state.playMode === nextMode && !silent) {
+    return;
+  }
+  state.playMode = nextMode;
+  roomPanel.classList.toggle("audio-mode", nextMode === "audio");
+  modeVideoBtn.classList.toggle("active", nextMode === "video");
+  modeAudioBtn.classList.toggle("active", nextMode === "audio");
+
+  const fromPlayer = nextMode === "audio" ? videoPlayer : audioPlayer;
+  const toPlayer = getActivePlayer();
+  const wasPlaying = !fromPlayer.paused;
+  const fromTime = Number(fromPlayer.currentTime || 0);
+  const activeItem = state.mediaLibrary.find((item) => item.id === state.activeMediaId);
+  const targetUrl = resolveMediaUrlForMode(activeItem, nextMode);
+  if (targetUrl && normalizeUrl(toPlayer.currentSrc || toPlayer.src) !== normalizeUrl(targetUrl)) {
+    toPlayer.src = targetUrl;
+    state.activeMediaUrl = targetUrl;
+  }
+  if (toPlayer.currentSrc) {
+    toPlayer.currentTime = fromTime;
+  }
+  fromPlayer.pause();
+  if (wasPlaying && toPlayer.currentSrc) {
+    toPlayer.play().catch(() => {});
+  }
+  renderMediaLibrary();
+  if (!silent) {
+    state.forceTakeover = true;
+    state.localOverrideUntil = Date.now() + 1200;
+    sendSync();
+  }
+}
+
 function renderMediaLibrary() {
   mediaList.innerHTML = "";
   if (!state.mediaLibrary.length) {
@@ -165,20 +221,33 @@ function renderMediaLibrary() {
   state.mediaLibrary.forEach((item) => {
     const li = document.createElement("li");
     const btn = document.createElement("button");
-    if (state.activeMediaUrl && normalizeUrl(state.activeMediaUrl) === normalizeUrl(item.url)) {
+    const modeUrl = resolveMediaUrlForMode(item, state.playMode);
+    const playable = !!modeUrl;
+    if (
+      (state.activeMediaId && state.activeMediaId === item.id) ||
+      (state.activeMediaUrl && normalizeUrl(modeUrl) === normalizeUrl(state.activeMediaUrl))
+    ) {
       btn.classList.add("active");
     }
-    btn.textContent = `${item.name}  |  ${formatBytes(item.size)}`;
+    const mediaType = item.audioUrl ? "AV" : "V";
+    btn.textContent = `${item.name}  |  ${formatBytes(item.size)}  |  ${mediaType}`;
+    if (!playable) {
+      btn.disabled = true;
+      btn.title = state.playMode === "audio" ? "No audio track for this item" : "No video track";
+    }
     btn.onclick = async () => {
+      if (!playable) return;
       state.forceTakeover = true;
       state.localOverrideUntil = Date.now() + 1200;
-      state.activeMediaUrl = item.url;
-      videoPlayer.src = item.url;
-      videoPlayer.currentTime = 0;
-      await videoPlayer.play().catch(() => {});
+      state.activeMediaId = item.id || null;
+      state.activeMediaUrl = modeUrl;
+      const player = getActivePlayer();
+      player.src = modeUrl;
+      player.currentTime = 0;
+      await player.play().catch(() => {});
       sendSync();
       renderMediaLibrary();
-      setMediaStatus(`Selected: ${item.name}`);
+      setMediaStatus(`Selected: ${item.name} (${state.playMode} mode)`);
     };
     li.appendChild(btn);
     mediaList.appendChild(li);
@@ -188,6 +257,13 @@ function renderMediaLibrary() {
 async function loadMediaLibrary() {
   const data = await api("/api/media", { method: "GET" });
   state.mediaLibrary = data.items || [];
+  if (state.activeMediaUrl && !state.activeMediaId) {
+    const found = state.mediaLibrary.find((item) => {
+      const modeUrl = resolveMediaUrlForMode(item, state.playMode);
+      return normalizeUrl(modeUrl) === normalizeUrl(state.activeMediaUrl);
+    });
+    state.activeMediaId = found?.id || null;
+  }
   renderMediaLibrary();
 }
 
@@ -286,11 +362,20 @@ function enterLobbyView(clearSavedRoom = true) {
   state.controllerUserId = null;
   state.roomDisplayNo = null;
   state.forceTakeover = false;
+  state.playMode = "video";
   state.activeMediaUrl = "";
+  state.activeMediaId = null;
   state.localOverrideUntil = 0;
   state.localActionCounter = 0;
   state.lastLocalActionId = 0;
   state.lastServerUpdatedAt = 0;
+  videoPlayer.pause();
+  audioPlayer.pause();
+  videoPlayer.removeAttribute("src");
+  audioPlayer.removeAttribute("src");
+  videoPlayer.load();
+  audioPlayer.load();
+  setPlayMode("video", { silent: true });
   currentRoomTitle.textContent = "Room";
   if (clearSavedRoom) {
     clearRoomSession();
@@ -478,6 +563,9 @@ function applyRemoteState(data, by) {
     return;
   }
 
+  const remoteMode = data.playMode === "audio" ? "audio" : "video";
+  setPlayMode(remoteMode, { silent: true });
+
   state.suppressVideoEvents = true;
 
   if (Object.prototype.hasOwnProperty.call(data, "controllerUserId")) {
@@ -489,38 +577,45 @@ function applyRemoteState(data, by) {
   }
 
   const incomingUrl = normalizeUrl(data.videoUrl || "");
+  const player = getActivePlayer();
   if (!incomingUrl) {
     state.activeMediaUrl = "";
+    state.activeMediaId = null;
     renderMediaLibrary();
   }
-  const currentUrl = normalizeUrl(videoPlayer.getAttribute("src") || videoPlayer.currentSrc || "");
+  const currentUrl = normalizeUrl(player.getAttribute("src") || player.currentSrc || "");
   if (incomingUrl && currentUrl !== incomingUrl) {
     state.activeMediaUrl = data.videoUrl;
-    videoPlayer.src = incomingUrl;
+    const media = state.mediaLibrary.find((item) => {
+      const modeUrl = resolveMediaUrlForMode(item, state.playMode);
+      return normalizeUrl(modeUrl) === incomingUrl;
+    });
+    state.activeMediaId = media?.id || null;
+    player.src = incomingUrl;
     renderMediaLibrary();
   }
 
-  const drift = Math.abs((videoPlayer.currentTime || 0) - (data.currentTime || 0));
+  const drift = Math.abs((player.currentTime || 0) - (data.currentTime || 0));
   let jumpedBySeek = false;
   if (drift > 1.2) {
     jumpedBySeek = true;
-    videoPlayer.currentTime = data.currentTime || 0;
+    player.currentTime = data.currentTime || 0;
   }
 
   if (data.isPlaying) {
     const ensurePlay = () => {
-      videoPlayer.play().catch(() => {
+      player.play().catch(() => {
         statusBar.textContent = "Playback blocked by browser policy. Click play once to enable sync playback.";
       });
     };
     if (jumpedBySeek) {
-      videoPlayer.addEventListener("seeked", ensurePlay, { once: true });
+      player.addEventListener("seeked", ensurePlay, { once: true });
       setTimeout(ensurePlay, 120);
     } else {
       ensurePlay();
     }
   } else {
-    videoPlayer.pause();
+    player.pause();
   }
 
   const controllerText = state.controllerUserId === state.me?.id ? "you" : `user#${state.controllerUserId || "?"}`;
@@ -539,16 +634,21 @@ function sendSync() {
   if (!canPush) return;
   const actionId = ++state.localActionCounter;
   state.lastLocalActionId = actionId;
+  const player = getActivePlayer();
   const mediaPath =
-    toMediaPath(videoPlayer.currentSrc) ||
-    toMediaPath(videoPlayer.src) ||
+    toMediaPath(player.currentSrc) ||
+    toMediaPath(player.src) ||
     toMediaPath(state.activeMediaUrl);
+  if (!mediaPath) {
+    return;
+  }
   const payload = {
     type: "sync",
     actionId,
+    playMode: state.playMode,
     videoUrl: mediaPath,
-    currentTime: Number(videoPlayer.currentTime || 0),
-    isPlaying: !videoPlayer.paused,
+    currentTime: Number(player.currentTime || 0),
+    isPlaying: !player.paused,
   };
   state.ws.send(JSON.stringify(payload));
   state.forceTakeover = false;
@@ -560,7 +660,10 @@ function scheduleSync() {
   state.syncTimer = setTimeout(sendSync, state.forceTakeover ? 40 : 120);
 }
 
-function onLocalPlaybackAction() {
+function onLocalPlaybackAction(event) {
+  if (event && event.currentTarget !== getActivePlayer()) {
+    return;
+  }
   if (state.suppressVideoEvents) {
     return;
   }
@@ -678,12 +781,36 @@ refreshMediaBtn.onclick = async () => {
   }
 };
 
+modeVideoBtn.onclick = () => {
+  setPlayMode("video");
+  setMediaStatus("Switched to video mode.");
+};
+
+modeAudioBtn.onclick = () => {
+  if (state.activeMediaId) {
+    const item = state.mediaLibrary.find((it) => it.id === state.activeMediaId);
+    if (item && !item.audioUrl) {
+      setMediaStatus("Current media has no audio track.", true);
+      return;
+    }
+  }
+  setPlayMode("audio");
+  setMediaStatus("Switched to audio mode.");
+};
+
 ["play", "pause", "seeked", "ratechange"].forEach((evt) => {
   videoPlayer.addEventListener(evt, onLocalPlaybackAction);
+  audioPlayer.addEventListener(evt, onLocalPlaybackAction);
 });
 
 videoPlayer.addEventListener("timeupdate", () => {
+  if (state.playMode !== "video") return;
   if (!videoPlayer.paused) scheduleSync();
+});
+
+audioPlayer.addEventListener("timeupdate", () => {
+  if (state.playMode !== "audio") return;
+  if (!audioPlayer.paused) scheduleSync();
 });
 
 chatForm.onsubmit = (e) => {

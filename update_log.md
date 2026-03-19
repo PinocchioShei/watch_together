@@ -55,3 +55,28 @@
 - Increased remote-apply suppression window to reduce immediate rebound on first seek/pause/play after entering a room.
 - Improved high-resolution UI layout: widened page/auth/lobby containers and expanded main video area so side panels no longer overly compress playback.
 - Updated static asset versions (`styles.css?v=20260319l`, `app.js?v=20260319l`).
+
+## 2026-03-19 20:31
+- Added true room-level playback mode switching (`Video Mode` / `Audio Mode`) with synchronized mode changes across users.
+- Introduced dedicated audio playback UI panel and dual-player runtime logic (`video` + `audio`) with unified sync events.
+- Refactored media storage into subfolders: imported video assets are saved under `media/video`, extracted audio assets under `media/audio`.
+- Added backend media asset catalog (`media_assets` table) and upgraded `/api/media` payload to return `videoUrl` + `audioUrl` entries.
+- Updated import pipeline to always generate a normalized MP4 video asset and optional AAC audio asset for true audio-only mode.
+- Enforced `/media/video/*` and `/media/audio/*` URL validation for WebSocket sync safety.
+- Updated static asset versions (`styles.css?v=20260319m`, `app.js?v=20260319m`).
+
+## 2026-03-19 21:09
+- Fixed media discovery issue by merging DB catalog with real filesystem scan from `media/video` and `media/audio`.
+- Added support for standalone audio-only files in media list (audio entries now appear even without matching video files).
+- Restarted server to apply backend media indexing fixes.
+
+## 2026-03-19 21:58
+- Added admin dashboard page (`/admin`) with dedicated admin auth and token sessions.
+- Added admin APIs for overview metrics, user CRUD, media listing/deletion, and import workflow.
+- Implemented media deletion by media key (removes filesystem files and related `media_assets` rows).
+- Added reusable import pipeline for both user upload API and admin import API.
+- Started a dedicated admin service port (`8091`) and documented default admin credentials.
+
+## 2026-03-19 22:12
+- Updated media import naming policy: generated files now use `originalName_###` sequential suffixes instead of timestamp/hash names.
+- Added filename sanitization for Windows-safe names and deterministic sequence allocation across `media/video` and `media/audio`.
