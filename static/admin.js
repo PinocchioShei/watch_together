@@ -1,3 +1,5 @@
+import { escapeHtml, formatBytes } from "./js/admin/helpers.js";
+
 const state = {
   token: sessionStorage.getItem("wt_admin_token") || "",
 };
@@ -45,22 +47,6 @@ async function api(path, options = {}) {
     throw new Error(detail);
   }
   return res.json();
-}
-
-function escapeHtml(v) {
-  return String(v)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
 }
 
 async function loadOverview() {

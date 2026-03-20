@@ -80,3 +80,25 @@
 ## 2026-03-19 22:12
 - Updated media import naming policy: generated files now use `originalName_###` sequential suffixes instead of timestamp/hash names.
 - Added filename sanitization for Windows-safe names and deterministic sequence allocation across `media/video` and `media/audio`.
+
+## 2026-03-20 10:21
+- Refactored backend from a monolithic `app.py` into multi-module architecture under `wt_server/`.
+- Added modular separation for config, schemas, runtime state, storage, auth, media services, and route assembly.
+- Kept API contracts and route paths unchanged (`app:app` startup compatibility preserved).
+- Added Chinese inline comments/docstrings in new modules to improve maintainability for future iterations.
+
+## 2026-03-20 11:01
+- Split frontend into module-based structure with reusable helpers (`static/js/shared/format.js`, `static/js/app/session.js`, `static/js/admin/helpers.js`).
+- Refactored main app/admin scripts to import shared modules, reducing duplicate logic and improving maintainability.
+- Upgraded page script loading to ES module mode (`type=module`) and bumped static cache versions.
+- Preserved all existing frontend behaviors while preparing for further feature expansion.
+
+## 2026-03-20 14:41
+- Further split room client into business modules: auth module, lobby module, chat module, and API client module.
+- Kept `static/app.js` as orchestration layer and delegated event/business logic to dedicated files in `static/js/app/`.
+- Added Chinese comments in new frontend modules to clarify responsibilities and future extension points.
+
+## 2026-03-20 15:06
+- Fixed late-join media gray-screen edge case by normalizing legacy room media URLs (`/media/<file>` -> `/media/video/<file>` / `/media/audio/<file>`).
+- Added compatibility normalization in room state API and WebSocket sync ingestion to prevent timestamp-only sync when URL format drifts.
+- Added automatic room_state URL correction write-back when normalized URL differs from stored legacy value.
