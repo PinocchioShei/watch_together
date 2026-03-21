@@ -6,5 +6,6 @@ watch_together.db
 media/
 
 log/debug/*.log
+tools/ddns_cf_config.json
 
 sample_hevc.mp4

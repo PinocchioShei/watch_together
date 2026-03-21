@@ -1,0 +1,7 @@
+{
+  "api_token": "REPLACE_WITH_CLOUDFLARE_API_TOKEN",
+  "zone_id": "REPLACE_WITH_ZONE_ID",
+  "record_name": "watch.hoshinase.xyz",
+  "ttl": 120,
+  "proxied": false
+}

@@ -102,3 +102,8 @@
 - Fixed late-join media gray-screen edge case by normalizing legacy room media URLs (`/media/<file>` -> `/media/video/<file>` / `/media/audio/<file>`).
 - Added compatibility normalization in room state API and WebSocket sync ingestion to prevent timestamp-only sync when URL format drifts.
 - Added automatic room_state URL correction write-back when normalized URL differs from stored legacy value.
+
+## 2026-03-20 20:39
+- Improved frontend network robustness for cloud access: added retry + timeout in app API client for transient fetch failures.
+- Added user-facing network error message (`Network unstable, please retry.`) for non-HTTP transport failures.
+- Bumped app script cache version (`app.js?v=20260320b`).
