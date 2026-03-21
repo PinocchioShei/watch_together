@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Admin</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260319a" />
+    <link rel="stylesheet" href="/static/admin.css?v=20260321e" />
   </head>
   <body>
     <div class="shell">
@@ -39,6 +39,13 @@
               <input id="newPassword" type="password" placeholder="password" minlength="6" required />
               <button type="submit">Create User</button>
             </form>
+            <form id="updateAdminForm" class="inline-form">
+              <input id="adminNewUsername" placeholder="new admin username (optional)" minlength="3" />
+              <input id="adminNewPassword" type="password" placeholder="new admin password (optional)" minlength="6" />
+              <input id="adminCurrentPassword" type="password" placeholder="current admin password (required)" required />
+              <button type="submit">Update Admin Profile</button>
+            </form>
+            <p id="adminProfileMsg" class="msg"></p>
             <div id="usersTable" class="table-wrap"></div>
           </article>
 
@@ -52,9 +59,14 @@
             <div id="mediaTable" class="table-wrap"></div>
           </article>
         </section>
+
+        <section class="card" style="margin-top: 16px;">
+          <div class="title-row"><h3>Room Management</h3><button id="refreshRooms">Refresh</button></div>
+          <div id="roomsTable" class="table-wrap"></div>
+        </section>
       </main>
     </div>
 
-    <script type="module" src="/static/admin.js?v=20260320a" defer></script>
+    <script type="module" src="/static/admin.js?v=20260321e" defer></script>
   </body>
   </html>

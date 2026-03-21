@@ -1,6 +1,8 @@
 """FastAPI 路由装配与应用创建。"""
 
+import asyncio
 import json
+import sqlite3
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -30,6 +32,7 @@ from .media import (
 from .schemas import (
     AdminCreateUserPayload,
     AdminLoginPayload,
+    AdminUpdateProfilePayload,
     AdminUpdateUserPayload,
     LoginPayload,
     RegisterPayload,
@@ -38,7 +41,33 @@ from .schemas import (
 )
 from .state import ADMIN_TOKENS, hub
 from .storage import db_conn, init_db
-from .utils import dt_to_str, now_utc
+from .utils import dt_to_str, now_utc, str_to_dt
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_admin_row(conn: sqlite3.Connection):
+    return conn.execute(
+        "SELECT id, username, password_salt, password_hash FROM admin_account WHERE id = 1"
+    ).fetchone()
+
+
+def ensure_admin_account(conn: sqlite3.Connection):
+    row = get_admin_row(conn)
+    if row:
+        return row
+    salt, password_hash = hash_password(ADMIN_PASSWORD)
+    conn.execute(
+        "INSERT INTO admin_account(id, username, password_salt, password_hash, updated_at) VALUES (1, ?, ?, ?, ?)",
+        (ADMIN_USERNAME, salt, password_hash, dt_to_str(now_utc())),
+    )
+    conn.commit()
+    return get_admin_row(conn)
 
 
 @asynccontextmanager
@@ -66,6 +95,62 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
+    owner_cleanup_tasks: dict[int, asyncio.Task] = {}
+
+    async def build_room_members_payload(room_id: int) -> dict:
+        online_ids = await hub.room_user_ids(room_id)
+        if not online_ids:
+            return {"type": "members", "roomId": room_id, "onlineCount": 0, "members": []}
+
+        conn = db_conn()
+        try:
+            room = conn.execute("SELECT owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            owner_id = room["owner_id"] if room else None
+            placeholders = ",".join("?" for _ in online_ids)
+            rows = conn.execute(
+                f"SELECT id, username FROM users WHERE id IN ({placeholders}) ORDER BY username COLLATE NOCASE",
+                tuple(online_ids),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        members = [{"id": row["id"], "username": row["username"], "isOwner": row["id"] == owner_id} for row in rows]
+        return {"type": "members", "roomId": room_id, "onlineCount": len(members), "members": members}
+
+    async def broadcast_room_members(room_id: int) -> None:
+        await hub.broadcast(room_id, await build_room_members_payload(room_id))
+
+    def cancel_owner_cleanup(room_id: int) -> None:
+        task = owner_cleanup_tasks.pop(room_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    def schedule_owner_cleanup(room_id: int, owner_id: int, owner_name: str, grace_seconds: int = 12) -> None:
+        cancel_owner_cleanup(room_id)
+
+        async def _cleanup() -> None:
+            try:
+                await asyncio.sleep(grace_seconds)
+                if await hub.has_user(room_id, owner_id):
+                    return
+                conn = db_conn()
+                try:
+                    room = conn.execute("SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
+                    if not room or room["owner_id"] != owner_id:
+                        return
+                    room_name = room["name"]
+                    conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
+                    conn.commit()
+                finally:
+                    conn.close()
+                await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": owner_name})
+            except asyncio.CancelledError:
+                return
+            finally:
+                owner_cleanup_tasks.pop(room_id, None)
+
+        owner_cleanup_tasks[room_id] = asyncio.create_task(_cleanup())
+
     @app.get("/")
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
@@ -76,10 +161,48 @@ def create_app() -> FastAPI:
 
     @app.post("/api/admin/login")
     def admin_login(payload: AdminLoginPayload):
-        if payload.username != ADMIN_USERNAME or payload.password != ADMIN_PASSWORD:
+        conn = db_conn()
+        try:
+            admin_row = ensure_admin_account(conn)
+        finally:
+            conn.close()
+        if payload.username != admin_row["username"] or not verify_password(
+            payload.password,
+            admin_row["password_salt"],
+            admin_row["password_hash"],
+        ):
             raise HTTPException(status_code=401, detail="Invalid admin credentials")
         token = create_admin_session_token()
         return {"ok": True, "token": token}
+
+    @app.patch("/api/admin/profile")
+    def admin_update_profile(payload: AdminUpdateProfilePayload, _: str = Depends(require_admin)):
+        conn = db_conn()
+        try:
+            admin_row = ensure_admin_account(conn)
+            if not verify_password(payload.currentPassword, admin_row["password_salt"], admin_row["password_hash"]):
+                raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+            next_username = (payload.newUsername or admin_row["username"]).strip()
+            next_password = payload.newPassword or None
+            if not next_username:
+                raise HTTPException(status_code=400, detail="Username cannot be empty")
+            if not next_password and next_username == admin_row["username"]:
+                raise HTTPException(status_code=400, detail="No changes to apply")
+
+            salt = admin_row["password_salt"]
+            password_hash = admin_row["password_hash"]
+            if next_password:
+                salt, password_hash = hash_password(next_password)
+
+            conn.execute(
+                "UPDATE admin_account SET username = ?, password_salt = ?, password_hash = ?, updated_at = ? WHERE id = 1",
+                (next_username, salt, password_hash, dt_to_str(now_utc())),
+            )
+            conn.commit()
+            return {"ok": True, "username": next_username}
+        finally:
+            conn.close()
 
     @app.post("/api/admin/logout")
     def admin_logout(request: Request):
@@ -174,6 +297,40 @@ def create_app() -> FastAPI:
             item["mediaKey"] = stem_from_media_url(item["videoUrl"] or item["audioUrl"])
         return {"items": items}
 
+    @app.get("/api/admin/rooms")
+    async def admin_rooms(_: str = Depends(require_admin)):
+        conn = db_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT r.id, r.name, r.owner_id, u.username AS owner_name,
+                       (SELECT COUNT(*) FROM room_members rm WHERE rm.room_id = r.id) AS members
+                FROM rooms r
+                JOIN users u ON u.id = r.owner_id
+                ORDER BY r.id DESC
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        online_map: dict[int, int] = {}
+        for row in rows:
+            online_map[row["id"]] = len(await hub.room_user_ids(int(row["id"])))
+
+        return {
+            "items": [
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "ownerId": row["owner_id"],
+                    "owner": row["owner_name"],
+                    "members": row["members"],
+                    "online": online_map.get(row["id"], 0),
+                }
+                for row in rows
+            ]
+        }
+
     @app.delete("/api/admin/media/{media_key}")
     def admin_delete_media(media_key: str, _: str = Depends(require_admin)):
         conn = db_conn()
@@ -182,6 +339,23 @@ def create_app() -> FastAPI:
             return {"ok": True, **result}
         finally:
             conn.close()
+
+    @app.delete("/api/admin/rooms/{room_id}")
+    async def admin_delete_room(room_id: int, _: str = Depends(require_admin)):
+        cancel_owner_cleanup(room_id)
+        conn = db_conn()
+        try:
+            room = conn.execute("SELECT id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
+            room_name = room["name"]
+            conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": "admin"})
+        return {"ok": True, "roomId": room_id}
 
     @app.post("/api/admin/import")
     async def admin_import(file: UploadFile = File(...), _: str = Depends(require_admin)):
@@ -205,7 +379,7 @@ def create_app() -> FastAPI:
             conn.close()
 
     @app.post("/api/login")
-    def login(payload: LoginPayload):
+    async def login(payload: LoginPayload, request: Request):
         conn = db_conn()
         try:
             row = conn.execute(
@@ -214,6 +388,19 @@ def create_app() -> FastAPI:
             ).fetchone()
             if not row or not verify_password(payload.password, row["password_salt"], row["password_hash"]):
                 raise HTTPException(status_code=401, detail="Invalid credentials")
+
+            existing = conn.execute(
+                "SELECT token, expires_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            current_cookie = request.cookies.get("session_token")
+            if existing:
+                if str_to_dt(existing["expires_at"]) < now_utc():
+                    conn.execute("DELETE FROM sessions WHERE token = ?", (existing["token"],))
+                    conn.commit()
+                elif existing["token"] != current_cookie:
+                    raise HTTPException(status_code=409, detail="Account already logged in on another device")
+
             token = create_session(conn, row["id"])
             res = JSONResponse({"ok": True, "token": token})
             res.set_cookie(key="session_token", value=token, httponly=True, samesite="lax", max_age=14 * 24 * 3600)
@@ -303,9 +490,11 @@ def create_app() -> FastAPI:
     def join_room(room_id: int, user: User = Depends(require_user)):
         conn = db_conn()
         try:
-            room = conn.execute("SELECT id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute("SELECT id, owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
             if not room:
                 raise HTTPException(status_code=404, detail="Room not found")
+            if room["owner_id"] == user.id:
+                cancel_owner_cleanup(room_id)
             conn.execute(
                 """
                 INSERT INTO room_members(room_id, user_id, joined_at)
@@ -336,20 +525,31 @@ def create_app() -> FastAPI:
             ).fetchone()
             if not state:
                 raise HTTPException(status_code=404, detail="State not found")
+            controller_user_id = state["controller_user_id"]
+            if controller_user_id is not None and not conn.execute(
+                "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room_id, controller_user_id),
+            ).fetchone():
+                controller_user_id = None
+                conn.execute(
+                    "UPDATE room_state SET controller_user_id = NULL, updated_at = ? WHERE room_id = ?",
+                    (dt_to_str(now_utc()), room_id),
+                )
+                conn.commit()
             normalized_video_url = normalize_media_url(state["video_url"] or "")
             safe_video_url = normalized_video_url if is_valid_media_url(normalized_video_url) else ""
             if safe_video_url and safe_video_url != (state["video_url"] or ""):
                 conn.execute("UPDATE room_state SET video_url = ?, updated_at = ? WHERE room_id = ?", (safe_video_url, dt_to_str(now_utc()), room_id))
                 conn.commit()
             play_mode = "audio" if safe_video_url.startswith("/media/audio/") else "video"
-            can_control = state["controller_user_id"] in (None, user.id)
+            can_control = controller_user_id in (None, user.id)
             return {
                 "videoUrl": safe_video_url,
                 "playMode": play_mode,
                 "currentTime": state["current_time_sec"],
                 "isPlaying": bool(state["is_playing"]),
                 "updatedAt": state["updated_at"],
-                "controllerUserId": state["controller_user_id"],
+                "controllerUserId": controller_user_id,
                 "canControl": can_control,
             }
         finally:
@@ -357,6 +557,7 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/rooms/{room_id}")
     async def delete_room(room_id: int, user: User = Depends(require_user)):
+        cancel_owner_cleanup(room_id)
         conn = db_conn()
         try:
             room = conn.execute("SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
@@ -399,6 +600,9 @@ def create_app() -> FastAPI:
 
         if deleted:
             await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": user.username})
+            cancel_owner_cleanup(room_id)
+        else:
+            await broadcast_room_members(room_id)
         return {"ok": True, "roomDeleted": deleted}
 
     @app.post("/api/upload-video")
@@ -409,11 +613,14 @@ def create_app() -> FastAPI:
     @app.websocket("/ws/rooms/{room_id}")
     async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):
         conn = db_conn()
+        is_owner = False
         try:
             user = get_user_by_token(conn, token or websocket.cookies.get("session_token"))
             row = conn.execute("SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?", (room_id, user.id)).fetchone()
             if not row:
                 raise HTTPException(status_code=403, detail="Not in room")
+            owner_row = conn.execute("SELECT owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            is_owner = bool(owner_row and owner_row["owner_id"] == user.id)
         except HTTPException:
             await websocket.close(code=1008)
             conn.close()
@@ -421,7 +628,10 @@ def create_app() -> FastAPI:
         conn.close()
 
         await websocket.accept()
-        await hub.add(room_id, websocket)
+        await hub.add(room_id, websocket, user.id)
+        if is_owner:
+            cancel_owner_cleanup(room_id)
+        await broadcast_room_members(room_id)
 
         try:
             init_conn = db_conn()
@@ -438,6 +648,18 @@ def create_app() -> FastAPI:
             normalized_initial = normalize_media_url(initial_raw)
             initial_video_url = normalized_initial if is_valid_media_url(normalized_initial) else ""
             initial_play_mode = "audio" if initial_video_url.startswith("/media/audio/") else "video"
+            initial_controller = state["controller_user_id"] if state else user.id
+            if initial_controller is not None and not await hub.has_user(room_id, int(initial_controller)):
+                initial_controller = None
+                fix_conn = db_conn()
+                try:
+                    fix_conn.execute(
+                        "UPDATE room_state SET controller_user_id = NULL, updated_at = ? WHERE room_id = ?",
+                        (dt_to_str(now_utc()), room_id),
+                    )
+                    fix_conn.commit()
+                finally:
+                    fix_conn.close()
             await websocket.send_text(
                 json.dumps(
                     {
@@ -447,7 +669,7 @@ def create_app() -> FastAPI:
                         "currentTime": state["current_time_sec"] if state else 0,
                         "isPlaying": bool(state["is_playing"]) if state else False,
                         "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
-                        "controllerUserId": state["controller_user_id"] if state else user.id,
+                        "controllerUserId": initial_controller,
                         "actionId": 0,
                         "by": "system",
                     }
@@ -472,38 +694,77 @@ def create_app() -> FastAPI:
                     is_playing = bool(payload.get("isPlaying", False))
 
                     up_conn = db_conn()
-                    up_conn.execute(
-                        """
-                        INSERT INTO room_state(room_id, video_url, current_time, is_playing, controller_user_id, updated_by, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(room_id)
-                        DO UPDATE SET
-                            video_url = excluded.video_url,
-                            current_time = excluded.current_time,
-                            is_playing = excluded.is_playing,
-                            controller_user_id = excluded.controller_user_id,
-                            updated_by = excluded.updated_by,
-                            updated_at = excluded.updated_at
-                        """,
-                        (room_id, video_url, current_time, 1 if is_playing else 0, user.id, user.id, dt_to_str(now_utc())),
-                    )
-                    up_conn.commit()
-                    up_conn.close()
+                    should_broadcast_state = False
+                    try:
+                        latest_state = up_conn.execute(
+                            "SELECT controller_user_id FROM room_state WHERE room_id = ?",
+                            (room_id,),
+                        ).fetchone()
+                        active_controller = latest_state["controller_user_id"] if latest_state else None
+                        if active_controller is not None and not await hub.has_user(room_id, int(active_controller)):
+                            active_controller = None
 
-                    await hub.broadcast(
-                        room_id,
-                        {
-                            "type": "state",
-                            "videoUrl": video_url,
-                            "playMode": play_mode,
-                            "currentTime": current_time,
-                            "isPlaying": is_playing,
-                            "updatedAt": dt_to_str(now_utc()),
-                            "controllerUserId": user.id,
-                            "actionId": action_id,
-                            "by": user.username,
-                        },
-                    )
+                        takeover = bool(payload.get("forceTakeover", False))
+                        if active_controller not in (None, user.id) and not takeover:
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        "type": "state",
+                                        "videoUrl": video_url,
+                                        "playMode": play_mode,
+                                        "currentTime": current_time,
+                                        "isPlaying": is_playing,
+                                        "updatedAt": dt_to_str(now_utc()),
+                                        "controllerUserId": active_controller,
+                                        "actionId": action_id,
+                                        "by": "controller-locked",
+                                    }
+                                )
+                            )
+                            continue
+
+                        up_conn.execute(
+                            """
+                            INSERT INTO room_state(room_id, video_url, current_time, is_playing, controller_user_id, updated_by, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(room_id)
+                            DO UPDATE SET
+                                video_url = excluded.video_url,
+                                current_time = excluded.current_time,
+                                is_playing = excluded.is_playing,
+                                controller_user_id = excluded.controller_user_id,
+                                updated_by = excluded.updated_by,
+                                updated_at = excluded.updated_at
+                            """,
+                            (room_id, video_url, current_time, 1 if is_playing else 0, user.id, user.id, dt_to_str(now_utc())),
+                        )
+                        up_conn.commit()
+                        should_broadcast_state = True
+                    except sqlite3.IntegrityError:
+                        # 房间或用户关系已失效，避免打爆连接并提示客户端退出当前房间。
+                        await websocket.send_text(json.dumps({"type": "error", "message": "Room no longer exists"}))
+                    except sqlite3.OperationalError:
+                        await websocket.send_text(json.dumps({"type": "error", "message": "Server busy, please retry"}))
+                    finally:
+                        up_conn.close()
+
+                    if should_broadcast_state:
+                        await hub.broadcast(
+                            room_id,
+                            {
+                                "type": "state",
+                                "videoUrl": video_url,
+                                "playMode": play_mode,
+                                "currentTime": current_time,
+                                "isPlaying": is_playing,
+                                "updatedAt": dt_to_str(now_utc()),
+                                "controllerUserId": user.id,
+                                "actionId": action_id,
+                                "by": user.username,
+                            },
+                        )
+                elif msg_type == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong", "ts": dt_to_str(now_utc())}))
                 elif msg_type == "chat":
                     msg = str(payload.get("message", "")).strip()[:400]
                     if not msg:
@@ -513,5 +774,46 @@ def create_app() -> FastAPI:
             pass
         finally:
             await hub.remove(room_id, websocket)
+            # 控制者掉线后，快速释放控制权，避免房间状态长期冻结。
+            cleanup_conn = db_conn()
+            try:
+                row = cleanup_conn.execute(
+                    "SELECT video_url, current_time AS current_time_sec, is_playing, controller_user_id FROM room_state WHERE room_id = ?",
+                    (room_id,),
+                ).fetchone()
+                if row and row["controller_user_id"] == user.id and not await hub.has_user(room_id, user.id):
+                    cleanup_conn.execute(
+                        "UPDATE room_state SET controller_user_id = NULL, updated_at = ? WHERE room_id = ?",
+                        (dt_to_str(now_utc()), room_id),
+                    )
+                    cleanup_conn.commit()
+                    normalized_url = normalize_media_url(row["video_url"] or "")
+                    safe_url = normalized_url if is_valid_media_url(normalized_url) else ""
+                    await hub.broadcast(
+                        room_id,
+                        {
+                            "type": "state",
+                            "videoUrl": safe_url,
+                            "playMode": "audio" if safe_url.startswith("/media/audio/") else "video",
+                            "currentTime": safe_float(row["current_time_sec"], 0.0),
+                            "isPlaying": bool(row["is_playing"]),
+                            "updatedAt": dt_to_str(now_utc()),
+                            "controllerUserId": None,
+                            "actionId": 0,
+                            "by": "system-controller-release",
+                        },
+                    )
+            finally:
+                cleanup_conn.close()
+
+            await broadcast_room_members(room_id)
+
+            owner_conn = db_conn()
+            try:
+                room = owner_conn.execute("SELECT id, owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            finally:
+                owner_conn.close()
+            if room and room["owner_id"] == user.id and not await hub.has_user(room_id, user.id):
+                schedule_owner_cleanup(room_id, user.id, user.username)
 
     return app

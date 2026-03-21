@@ -9,8 +9,10 @@ const dashboard = document.getElementById("dashboard");
 const logoutBtn = document.getElementById("logoutBtn");
 const loginForm = document.getElementById("loginForm");
 const loginMsg = document.getElementById("loginMsg");
+const adminProfileMsg = document.getElementById("adminProfileMsg");
 const usersTable = document.getElementById("usersTable");
 const mediaTable = document.getElementById("mediaTable");
+const roomsTable = document.getElementById("roomsTable");
 const importMsg = document.getElementById("importMsg");
 
 function setLoginMsg(msg, err = false) {
@@ -23,10 +25,16 @@ function setImportMsg(msg, err = false) {
   importMsg.style.color = err ? "#fca5a5" : "#94a3b8";
 }
 
+function setAdminProfileMsg(msg, err = false) {
+  adminProfileMsg.textContent = msg || "";
+  adminProfileMsg.style.color = err ? "#fca5a5" : "#94a3b8";
+}
+
 function setAuthUI(ok) {
   loginCard.classList.toggle("hidden", ok);
   dashboard.classList.toggle("hidden", !ok);
   logoutBtn.classList.toggle("hidden", !ok);
+  document.body.classList.toggle("login-mode", !ok);
 }
 
 async function api(path, options = {}) {
@@ -60,9 +68,9 @@ async function loadOverview() {
 async function loadUsers() {
   const data = await api("/api/admin/users", { method: "GET" });
   const rows = data.items || [];
-  let html = "<table><thead><tr><th>ID</th><th>Username</th><th>Created</th><th>Actions</th></tr></thead><tbody>";
+  let html = "<table class=\"users-table\"><thead><tr><th>ID</th><th>Username</th><th>Actions</th></tr></thead><tbody>";
   rows.forEach((u) => {
-    html += `<tr><td>${u.id}</td><td>${escapeHtml(u.username)}</td><td>${escapeHtml(u.createdAt)}</td><td><div class=\"row-actions\"><button data-reset=\"${u.id}\">Reset Password</button><button class=\"danger\" data-del=\"${u.id}\">Delete</button></div></td></tr>`;
+    html += `<tr><td>${u.id}</td><td>${escapeHtml(u.username)}</td><td><div class=\"row-actions\"><button data-reset=\"${u.id}\">Reset Password</button><button class=\"danger\" data-del=\"${u.id}\">Delete</button></div></td></tr>`;
   });
   html += "</tbody></table>";
   usersTable.innerHTML = html;
@@ -94,9 +102,9 @@ async function loadUsers() {
 async function loadMedia() {
   const data = await api("/api/admin/media", { method: "GET" });
   const rows = data.items || [];
-  let html = "<table><thead><tr><th>Name</th><th>Video</th><th>Audio</th><th>Size</th><th>Updated</th><th>Actions</th></tr></thead><tbody>";
+  let html = "<table class=\"media-table\"><thead><tr><th>Name</th><th>Video</th><th>Audio</th><th>Size</th><th>Actions</th></tr></thead><tbody>";
   rows.forEach((m) => {
-    html += `<tr><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.videoUrl || "-")}</td><td>${escapeHtml(m.audioUrl || "-")}</td><td>${formatBytes(m.size || 0)}</td><td>${escapeHtml(m.updatedAt || "-")}</td><td><div class=\"row-actions\"><button class=\"danger\" data-del-media=\"${escapeHtml(m.mediaKey || "")}\">Delete</button></div></td></tr>`;
+    html += `<tr><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.videoUrl || "-")}</td><td>${escapeHtml(m.audioUrl || "-")}</td><td>${formatBytes(m.size || 0)}</td><td><div class=\"row-actions\"><button class=\"danger\" data-del-media=\"${escapeHtml(m.mediaKey || "")}\">Delete</button></div></td></tr>`;
   });
   html += "</tbody></table>";
   mediaTable.innerHTML = html;
@@ -113,8 +121,28 @@ async function loadMedia() {
   });
 }
 
+async function loadRooms() {
+  const data = await api("/api/admin/rooms", { method: "GET" });
+  const rows = data.items || [];
+  let html = "<table class=\"rooms-table\"><thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Members</th><th>Online</th><th>Actions</th></tr></thead><tbody>";
+  rows.forEach((r) => {
+    html += `<tr><td>${r.id}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.owner)}</td><td>${r.members}</td><td>${r.online}</td><td><div class=\"row-actions\"><button class=\"danger\" data-del-room=\"${r.id}\">Delete Room</button></div></td></tr>`;
+  });
+  html += "</tbody></table>";
+  roomsTable.innerHTML = html;
+
+  roomsTable.querySelectorAll("button[data-del-room]").forEach((btn) => {
+    btn.onclick = async () => {
+      const roomId = btn.getAttribute("data-del-room");
+      if (!confirm(`Delete room #${roomId}? All members will be kicked out.`)) return;
+      await api(`/api/admin/rooms/${roomId}`, { method: "DELETE" });
+      await Promise.all([loadRooms(), loadOverview()]);
+    };
+  });
+}
+
 async function bootstrapDashboard() {
-  await Promise.all([loadOverview(), loadUsers(), loadMedia()]);
+  await Promise.all([loadOverview(), loadUsers(), loadMedia(), loadRooms()]);
 }
 
 loginForm.onsubmit = async (e) => {
@@ -154,6 +182,11 @@ document.getElementById("refreshMedia").onclick = async () => {
   await loadOverview();
 };
 
+document.getElementById("refreshRooms").onclick = async () => {
+  await loadRooms();
+  await loadOverview();
+};
+
 document.getElementById("createUserForm").onsubmit = async (e) => {
   e.preventDefault();
   const username = document.getElementById("newUsername").value.trim();
@@ -166,6 +199,29 @@ document.getElementById("createUserForm").onsubmit = async (e) => {
   document.getElementById("newPassword").value = "";
   await loadUsers();
   await loadOverview();
+};
+
+document.getElementById("updateAdminForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const newUsername = document.getElementById("adminNewUsername").value.trim();
+  const newPassword = document.getElementById("adminNewPassword").value;
+  const currentPassword = document.getElementById("adminCurrentPassword").value;
+  try {
+    setAdminProfileMsg("Updating admin profile...");
+    await api("/api/admin/profile", {
+      method: "PATCH",
+      body: JSON.stringify({
+        currentPassword,
+        newUsername: newUsername || null,
+        newPassword: newPassword || null,
+      }),
+    });
+    document.getElementById("adminCurrentPassword").value = "";
+    document.getElementById("adminNewPassword").value = "";
+    setAdminProfileMsg("Admin profile updated.");
+  } catch (err) {
+    setAdminProfileMsg(err.message, true);
+  }
 };
 
 document.getElementById("importForm").onsubmit = async (e) => {

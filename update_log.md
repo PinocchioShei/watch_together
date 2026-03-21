@@ -107,3 +107,50 @@
 - Improved frontend network robustness for cloud access: added retry + timeout in app API client for transient fetch failures.
 - Added user-facing network error message (`Network unstable, please retry.`) for non-HTTP transport failures.
 - Bumped app script cache version (`app.js?v=20260320b`).
+
+## 2026-03-21 13:58
+- Improved mobile room layout in audio mode: prevent overlap between mode/action controls and enforce single-column content to keep audio controls usable.
+- Refined mobile audio presentation with tighter spacing and scaled audio hero area for small screens.
+- Polished admin login experience: centered login shell/card with dedicated login-mode styling, and kept dashboard layout unchanged after authentication.
+
+## 2026-03-21 14:36
+- Improved room sync resilience for unstable networks: client WebSocket now auto-reconnects with backoff and heartbeat ping/pong detection.
+- Added controller failover logic on server: release stale controller ownership when controller disconnects, preventing room state from freezing.
+- Added controlled takeover support (`forceTakeover`) so active user actions can recover sync leadership after reconnect.
+- Bumped frontend cache version (`app.js?v=20260321c`) for immediate rollout.
+
+## 2026-03-21 15:10
+- Added admin room management: new `/api/admin/rooms` list endpoint and admin room deletion endpoint, with forced room-exit broadcast for all members.
+- Added online member visibility in room page: real-time member list + online count via WebSocket `members` updates.
+- Added owner offline cleanup policy: if owner closes tab/window and stays offline past grace period, room is auto-deleted (refresh reconnect within grace does not delete room).
+- Synced frontend cache versions (`app.js?v=20260321d`, `admin.js?v=20260321b`).
+
+## 2026-03-21 16:31
+- Fixed owner-offline room deletion trigger: only owner reconnect/join now cancels pending cleanup; member join/reconnect no longer blocks owner-offline auto-delete.
+
+## 2026-03-21 16:49
+- Added room health fallback polling on client (10s): if room is deleted outside current WS channel, clients auto-return to lobby with alert.
+- Hardened leave-room flow: if room is already deleted, fallback exits to lobby instead of freezing on action button.
+- Fixed stale tab-lock edge on login attempts by clearing old lock before new login flow.
+- Bumped frontend cache version (`app.js?v=20260321e`).
+
+## 2026-03-21 17:06
+- Fixed crash path after room deletion race: guarded room state cleanup with safe float parsing to avoid `ValueError` from malformed/legacy time values.
+- Added DB contention resilience: SQLite connections now use longer busy timeout and API returns clearer transient busy message.
+- Hardened WS sync write path against room/member deletion races (`IntegrityError`) to prevent cascading 500s and login/create-room lockups.
+- Bumped frontend cache version (`app.js?v=20260321f`).
+
+## 2026-03-21 17:24
+- Enforced single-device login semantics: if the same account already has an active session on another device/browser, new login is blocked with clear 409 message.
+- Added client-side handling for concurrent-login conflicts and session replacement messaging, preventing silent stuck state.
+- Bumped frontend cache version (`app.js?v=20260321g`).
+
+## 2026-03-21 17:42
+- Fixed chat panel layout growth behavior: messages now stack from top with stable row height and scroll once overflowed.
+- Improved long-text containment in admin tables: enabled fixed-layout tables with aggressive word wrapping to prevent long media paths from stretching panel width.
+- Bumped static cache versions for stylesheet/script rollout (`styles.css?v=20260321b`, `admin.css/js?v=20260321c`).
+
+## 2026-03-21 18:05
+- Added admin self-profile update feature in dashboard: admin can change own username/password with current-password verification.
+- Migrated admin auth from hardcoded env-only check to persistent `admin_account` table bootstrap + hashed credential verification.
+- Updated admin page assets to new cache version (`admin.css/js?v=20260321e`).

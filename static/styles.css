@@ -283,6 +283,7 @@ button.danger:hover {
 
 .audio-panel audio {
   width: 100%;
+  min-width: 0;
 }
 
 .chat-column {
@@ -317,6 +318,34 @@ video {
   gap: 10px;
 }
 
+.members-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(15, 23, 42, 0.68);
+  display: grid;
+  gap: 8px;
+}
+
+.member-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 140px;
+  overflow: auto;
+}
+
+.member-list li {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.member-list .owner {
+  color: #86efac;
+}
+
 .chat-box {
   min-height: 420px;
   max-height: 520px;
@@ -326,12 +355,16 @@ video {
   border-radius: 10px;
   padding: 10px;
   display: grid;
+  align-content: start;
+  grid-auto-rows: min-content;
   gap: 6px;
 }
 
 .chat-row {
   font-size: 14px;
   line-height: 1.4;
+  align-self: start;
+  word-break: break-word;
 }
 
 .chat-row b {
@@ -349,6 +382,10 @@ video {
     grid-template-columns: 1fr;
   }
 
+  #roomPanel.audio-mode .room-content {
+    grid-template-columns: 1fr;
+  }
+
   .auth-card,
   #lobbyPanel {
     width: 100%;
@@ -361,7 +398,30 @@ video {
 
   .room-actions {
     flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: flex-start;
+    width: 100%;
+    gap: 8px;
+  }
+
+  .mode-switch {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .mode-switch button {
+    min-width: 0;
+  }
+
+  .audio-panel {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .audio-hero {
+    min-height: 120px;
+    font-size: 18px;
   }
 
   video {

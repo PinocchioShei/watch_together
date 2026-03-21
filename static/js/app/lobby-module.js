@@ -133,8 +133,11 @@ export function createLobbyModule(ctx) {
           await api(`/api/rooms/${leavingRoomId}/leave`, { method: "POST" });
         }
       } catch (err) {
-        statusBar.textContent = err.message;
-        return;
+        const msg = String(err.message || "").toLowerCase();
+        if (!msg.includes("room not found") && !msg.includes("not in room")) {
+          statusBar.textContent = err.message;
+          return;
+        }
       }
 
       safeCloseWs();

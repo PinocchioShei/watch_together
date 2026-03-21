@@ -24,6 +24,12 @@ const state = {
   localActionCounter: 0,
   lastLocalActionId: 0,
   lastServerUpdatedAt: 0,
+  wsReconnectTimer: null,
+  wsReconnectAttempts: 0,
+  wsShouldReconnect: false,
+  wsPingTimer: null,
+  wsPongTimeout: null,
+  roomHealthTimer: null,
 };
 
 const tabId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -54,6 +60,8 @@ const mediaStatus = document.getElementById("mediaStatus");
 const importForm = document.getElementById("importForm");
 const videoFileInput = document.getElementById("videoFileInput");
 const statusBar = document.getElementById("statusBar");
+const onlineCount = document.getElementById("onlineCount");
+const memberList = document.getElementById("memberList");
 const userBadge = document.getElementById("userBadge");
 const logoutBtn = document.getElementById("logoutBtn");
 const leaveRoomBtn = document.getElementById("leaveRoomBtn");
@@ -80,6 +88,52 @@ function setLobbyStatus(msg, isError = false) {
 function setMediaStatus(msg, isError = false) {
   mediaStatus.textContent = msg || "";
   mediaStatus.style.color = isError ? "#fca5a5" : "#94a3b8";
+}
+
+function renderMembers(payload) {
+  const members = Array.isArray(payload?.members) ? payload.members : [];
+  onlineCount.textContent = String(payload?.onlineCount ?? members.length);
+  memberList.innerHTML = "";
+  if (!members.length) {
+    const li = document.createElement("li");
+    li.textContent = "No one online.";
+    memberList.appendChild(li);
+    return;
+  }
+  members.forEach((member) => {
+    const li = document.createElement("li");
+    if (member.isOwner) li.classList.add("owner");
+    const ownerTag = member.isOwner ? " (owner)" : "";
+    const meTag = state.me && member.id === state.me.id ? " (you)" : "";
+    li.textContent = `${member.username}${ownerTag}${meTag}`;
+    memberList.appendChild(li);
+  });
+}
+
+function stopRoomHealthCheck() {
+  if (state.roomHealthTimer) {
+    clearInterval(state.roomHealthTimer);
+    state.roomHealthTimer = null;
+  }
+}
+
+function startRoomHealthCheck() {
+  stopRoomHealthCheck();
+  state.roomHealthTimer = setInterval(async () => {
+    if (!state.roomId) return;
+    try {
+      await api(`/api/rooms/${state.roomId}/state`, { method: "GET" });
+    } catch (err) {
+      const msg = String(err?.message || "").toLowerCase();
+      if (msg.includes("room not found") || msg.includes("join room first") || msg.includes("not in room")) {
+        alert("This room is no longer available. Returning to room list.");
+        safeCloseWs();
+        enterLobbyView();
+        setLobbyStatus("Room no longer exists.", true);
+        loadRooms().catch(() => {});
+      }
+    }
+  }, 10000);
 }
 
 function getActivePlayer() {
@@ -242,6 +296,8 @@ function enterLobbyView(clearSavedRoom = true) {
   state.localActionCounter = 0;
   state.lastLocalActionId = 0;
   state.lastServerUpdatedAt = 0;
+  renderMembers({ onlineCount: 0, members: [] });
+  stopRoomHealthCheck();
   videoPlayer.pause();
   audioPlayer.pause();
   videoPlayer.removeAttribute("src");
@@ -263,6 +319,19 @@ function enterRoomView(roomName, roomId, displayNo) {
 }
 
 function safeCloseWs() {
+  state.wsShouldReconnect = false;
+  if (state.wsReconnectTimer) {
+    clearTimeout(state.wsReconnectTimer);
+    state.wsReconnectTimer = null;
+  }
+  if (state.wsPingTimer) {
+    clearInterval(state.wsPingTimer);
+    state.wsPingTimer = null;
+  }
+  if (state.wsPongTimeout) {
+    clearTimeout(state.wsPongTimeout);
+    state.wsPongTimeout = null;
+  }
   if (state.ws) {
     state.ws.close();
     state.ws = null;
@@ -280,7 +349,9 @@ async function joinRoom(roomId, roomName, displayNo = null) {
   await loadMediaLibrary();
   setMediaStatus("Select a media file to play and sync.");
   safeCloseWs();
+  state.wsShouldReconnect = true;
   connectWs(roomId);
+  startRoomHealthCheck();
   const rs = await api(`/api/rooms/${roomId}/state`, { method: "GET" });
   applyRemoteState(rs, "server");
 }
@@ -292,10 +363,33 @@ function wsUrl(roomId) {
 }
 
 function connectWs(roomId) {
+  if (state.wsReconnectTimer) {
+    clearTimeout(state.wsReconnectTimer);
+    state.wsReconnectTimer = null;
+  }
   const socket = new WebSocket(wsUrl(roomId));
   state.ws = socket;
 
   socket.onopen = () => {
+    state.wsReconnectAttempts = 0;
+    if (state.wsPingTimer) {
+      clearInterval(state.wsPingTimer);
+    }
+    state.wsPingTimer = setInterval(() => {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+      try {
+        state.ws.send(JSON.stringify({ type: "ping" }));
+      } catch {
+      }
+      if (state.wsPongTimeout) {
+        clearTimeout(state.wsPongTimeout);
+      }
+      state.wsPongTimeout = setTimeout(() => {
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+          state.ws.close();
+        }
+      }, 12000);
+    }, 15000);
     statusBar.textContent = "Connected. Sync active.";
   };
 
@@ -303,10 +397,35 @@ function connectWs(roomId) {
     const data = JSON.parse(event.data);
     if (data.type === "state") {
       applyRemoteState(data, data.by || "peer");
+    } else if (data.type === "members") {
+      renderMembers(data);
+    } else if (data.type === "pong") {
+      if (state.wsPongTimeout) {
+        clearTimeout(state.wsPongTimeout);
+        state.wsPongTimeout = null;
+      }
     } else if (data.type === "error") {
-      statusBar.textContent = data.message || "Room sync error.";
+      const msg = String(data.message || "Room sync error.");
+      statusBar.textContent = msg;
+      if (msg.toLowerCase().includes("signed in on another device")) {
+        safeCloseWs();
+        stopTabLock();
+        state.token = "";
+        sessionStorage.removeItem("wt_token");
+        state.me = null;
+        state.roomId = null;
+        state.roomDisplayNo = null;
+        state.controllerUserId = null;
+        state.forceTakeover = false;
+        state.localOverrideUntil = 0;
+        clearRoomSession();
+        setAuthMode(false);
+        setMessage("This account was signed in elsewhere. Please login again.", true);
+      }
     } else if (data.type === "room_deleted") {
-      alert(`Room "${data.roomName || ""}" was closed by ${data.by || "owner"}. Returning to room list.`);
+      const by = data.by || "owner";
+      const reason = by === "admin" ? "admin" : by;
+      alert(`Room "${data.roomName || ""}" was closed by ${reason}. Returning to room list.`);
       safeCloseWs();
       enterLobbyView();
       setLobbyStatus(`Room "${data.roomName || ""}" has been deleted.`, true);
@@ -317,6 +436,28 @@ function connectWs(roomId) {
   };
 
   socket.onclose = () => {
+    if (state.wsPingTimer) {
+      clearInterval(state.wsPingTimer);
+      state.wsPingTimer = null;
+    }
+    if (state.wsPongTimeout) {
+      clearTimeout(state.wsPongTimeout);
+      state.wsPongTimeout = null;
+    }
+    if (state.ws === socket) {
+      state.ws = null;
+    }
+    if (state.wsShouldReconnect && state.roomId === roomId) {
+      state.wsReconnectAttempts += 1;
+      const delayMs = Math.min(10000, 1000 * 2 ** Math.min(state.wsReconnectAttempts, 3));
+      statusBar.textContent = `Disconnected from room sync. Reconnecting in ${Math.round(delayMs / 1000)}s...`;
+      state.wsReconnectTimer = setTimeout(() => {
+        if (state.wsShouldReconnect && state.roomId === roomId) {
+          connectWs(roomId);
+        }
+      }, delayMs);
+      return;
+    }
     statusBar.textContent = "Disconnected from room sync.";
   };
 }
@@ -432,6 +573,7 @@ function sendSync() {
   const payload = {
     type: "sync",
     actionId,
+    forceTakeover: state.forceTakeover,
     playMode: state.playMode,
     videoUrl: mediaPath,
     currentTime: Number(player.currentTime || 0),

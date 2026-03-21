@@ -89,6 +89,14 @@ def init_db() -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS admin_account (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            username TEXT NOT NULL UNIQUE,
+            password_salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
 
@@ -101,7 +109,8 @@ def init_db() -> None:
 
 
 def db_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA busy_timeout = 20000;")
     return conn

@@ -42,6 +42,7 @@ export function createAuthModule(ctx) {
     loginForm.onsubmit = async (e) => {
       e.preventDefault();
       try {
+        stopTabLock();
         const payload = {
           username: document.getElementById("loginUsername").value.trim(),
           password: document.getElementById("loginPassword").value,

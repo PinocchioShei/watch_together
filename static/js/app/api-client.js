@@ -51,7 +51,11 @@ export function createApiClient(ctx) {
             },
         credentials: "include",
       });
-    } catch {
+    } catch (err) {
+      const msg = String(err?.message || "");
+      if (/database is locked|server busy/i.test(msg)) {
+        throw new Error("Server busy, retry in a moment.");
+      }
       throw new Error("Network unstable, please retry.");
     }
 
@@ -76,6 +80,21 @@ export function createApiClient(ctx) {
         state.localOverrideUntil = 0;
         setAuthMode(false);
         setMessage("Session expired. Please login again.", true);
+      }
+
+      if (res.status === 409) {
+        safeCloseWs();
+        stopTabLock();
+        state.token = "";
+        sessionStorage.removeItem("wt_token");
+        state.me = null;
+        state.roomId = null;
+        state.roomDisplayNo = null;
+        state.controllerUserId = null;
+        state.forceTakeover = false;
+        state.localOverrideUntil = 0;
+        setAuthMode(false);
+        setMessage(detail || "Your account signed in elsewhere.", true);
       }
 
       throw new Error(detail);

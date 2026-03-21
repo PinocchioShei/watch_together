@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Local</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260319m" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260321b" />
   </head>
   <body>
     <div class="page auth-only">
@@ -92,6 +92,13 @@
               </div>
 
               <div class="chat-column chat-wrap">
+                <div class="members-panel">
+                  <div class="section-title compact">
+                    <h4>Online Members</h4>
+                    <span id="onlineCount" class="status">0</span>
+                  </div>
+                  <ul id="memberList" class="member-list"></ul>
+                </div>
                 <h4>Room Chat</h4>
                 <div id="chatBox" class="chat-box"></div>
                 <form id="chatForm" class="inline-form">
@@ -105,6 +112,6 @@
       </main>
     </div>
 
-    <script type="module" src="/static/app.js?v=20260320b" defer></script>
+    <script type="module" src="/static/app.js?v=20260321g" defer></script>
   </body>
 </html>

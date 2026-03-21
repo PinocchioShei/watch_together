@@ -33,6 +33,12 @@ class AdminUpdateUserPayload(BaseModel):
     password: str = Field(min_length=6, max_length=128)
 
 
+class AdminUpdateProfilePayload(BaseModel):
+    currentPassword: str = Field(min_length=1, max_length=128)
+    newUsername: str | None = Field(default=None, min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
+    newPassword: str | None = Field(default=None, min_length=6, max_length=128)
+
+
 @dataclass
 class User:
     id: int
