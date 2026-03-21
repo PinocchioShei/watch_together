@@ -154,3 +154,8 @@
 - Added admin self-profile update feature in dashboard: admin can change own username/password with current-password verification.
 - Migrated admin auth from hardcoded env-only check to persistent `admin_account` table bootstrap + hashed credential verification.
 - Updated admin page assets to new cache version (`admin.css/js?v=20260321e`).
+
+## 2026-03-21 18:28
+- Added room password protection: room creation now requires a password, and join requests must provide matching password.
+- Updated lobby UI for password flow: create form includes room password field, and join action prompts user for locked room password.
+- Added room schema/storage migration support for password hash fields and bumped app cache version (`app.js?v=20260321h`).

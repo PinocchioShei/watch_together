@@ -36,6 +36,7 @@ from .schemas import (
     AdminUpdateUserPayload,
     LoginPayload,
     RegisterPayload,
+    RoomJoinPayload,
     RoomPayload,
     User,
 )
@@ -304,6 +305,7 @@ def create_app() -> FastAPI:
             rows = conn.execute(
                 """
                 SELECT r.id, r.name, r.owner_id, u.username AS owner_name,
+                       r.password_hash,
                        (SELECT COUNT(*) FROM room_members rm WHERE rm.room_id = r.id) AS members
                 FROM rooms r
                 JOIN users u ON u.id = r.owner_id
@@ -443,6 +445,7 @@ def create_app() -> FastAPI:
             rows = conn.execute(
                 """
                 SELECT r.id, r.name, r.owner_id, u.username AS owner_name,
+                       r.password_hash,
                        (SELECT COUNT(*) FROM room_members rm WHERE rm.room_id = r.id) AS members
                 FROM rooms r
                 JOIN users u ON u.id = r.owner_id
@@ -457,6 +460,7 @@ def create_app() -> FastAPI:
                         "ownerId": row["owner_id"],
                         "owner": row["owner_name"],
                         "members": row["members"],
+                        "hasPassword": bool(row["password_hash"]),
                     }
                     for row in rows
                 ]
@@ -469,11 +473,15 @@ def create_app() -> FastAPI:
         room_name = payload.name.strip()
         if len(room_name) < 2:
             raise HTTPException(status_code=422, detail="Room name too short")
+        room_password = payload.password
+        if len(room_password) < 4:
+            raise HTTPException(status_code=422, detail="Room password too short")
         conn = db_conn()
         try:
+            room_salt, room_hash = hash_password(room_password)
             cursor = conn.execute(
-                "INSERT INTO rooms(name, owner_id, created_at) VALUES (?, ?, ?)",
-                (room_name, user.id, dt_to_str(now_utc())),
+                "INSERT INTO rooms(name, owner_id, password_salt, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                (room_name, user.id, room_salt, room_hash, dt_to_str(now_utc())),
             )
             room_id = cursor.lastrowid
             conn.execute("INSERT INTO room_members(room_id, user_id, joined_at) VALUES (?, ?, ?)", (room_id, user.id, dt_to_str(now_utc())))
@@ -487,12 +495,17 @@ def create_app() -> FastAPI:
             conn.close()
 
     @app.post("/api/rooms/{room_id}/join")
-    def join_room(room_id: int, user: User = Depends(require_user)):
+    def join_room(room_id: int, payload: RoomJoinPayload, user: User = Depends(require_user)):
         conn = db_conn()
         try:
-            room = conn.execute("SELECT id, owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute("SELECT id, owner_id, password_salt, password_hash FROM rooms WHERE id = ?", (room_id,)).fetchone()
             if not room:
                 raise HTTPException(status_code=404, detail="Room not found")
+
+            room_salt = room["password_salt"]
+            room_hash = room["password_hash"]
+            if room_salt and room_hash and not verify_password(payload.password, room_salt, room_hash):
+                raise HTTPException(status_code=403, detail="Invalid room password")
             if room["owner_id"] == user.id:
                 cancel_owner_cleanup(room_id)
             conn.execute(

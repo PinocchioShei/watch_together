@@ -53,6 +53,8 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             owner_id INTEGER NOT NULL,
+            password_salt TEXT,
+            password_hash TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
         );
@@ -103,6 +105,12 @@ def init_db() -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(room_state)").fetchall()}
     if "controller_user_id" not in columns:
         conn.execute("ALTER TABLE room_state ADD COLUMN controller_user_id INTEGER")
+
+    room_columns = {row[1] for row in conn.execute("PRAGMA table_info(rooms)").fetchall()}
+    if "password_salt" not in room_columns:
+        conn.execute("ALTER TABLE rooms ADD COLUMN password_salt TEXT")
+    if "password_hash" not in room_columns:
+        conn.execute("ALTER TABLE rooms ADD COLUMN password_hash TEXT")
 
     conn.commit()
     conn.close()

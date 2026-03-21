@@ -37,8 +37,9 @@ export function createLobbyModule(ctx) {
       row.className = "room-row";
 
       const joinBtn = document.createElement("button");
-      joinBtn.textContent = `#${room.displayNo} ${room.name}  | owner: ${room.owner}  | members: ${room.members}`;
-      joinBtn.onclick = () => joinRoom(room.id, room.name, room.displayNo);
+      const lockMark = room.hasPassword ? " [locked]" : "";
+      joinBtn.textContent = `#${room.displayNo} ${room.name}${lockMark}  | owner: ${room.owner}  | members: ${room.members}`;
+      joinBtn.onclick = () => joinRoom(room.id, room.name, room.displayNo, null, { allowPrompt: true });
       row.appendChild(joinBtn);
 
       if (state.me && room.ownerId === state.me.id) {
@@ -92,16 +93,18 @@ export function createLobbyModule(ctx) {
       try {
         setLobbyStatus("Creating room...");
         const roomName = document.getElementById("roomName").value.trim();
+        const roomPassword = document.getElementById("roomPassword").value;
         if (!roomName) return;
         const room = await api("/api/rooms", {
           method: "POST",
-          body: JSON.stringify({ name: roomName }),
+          body: JSON.stringify({ name: roomName, password: roomPassword }),
         });
         document.getElementById("roomName").value = "";
+        document.getElementById("roomPassword").value = "";
         const rooms = await loadRooms();
         const created = rooms.find((r) => r.id === room.id);
         setLobbyStatus("Room created.");
-        await joinRoom(room.id, room.name, created ? created.displayNo : 0);
+        await joinRoom(room.id, room.name, created ? created.displayNo : 0, roomPassword, { allowPrompt: false });
       } catch (err) {
         setLobbyStatus(err.message, true);
       }

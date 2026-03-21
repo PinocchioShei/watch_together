@@ -17,6 +17,11 @@ class LoginPayload(BaseModel):
 
 class RoomPayload(BaseModel):
     name: str = Field(min_length=2, max_length=60)
+    password: str = Field(min_length=4, max_length=128)
+
+
+class RoomJoinPayload(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
 
 
 class AdminLoginPayload(BaseModel):

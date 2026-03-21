@@ -338,8 +338,25 @@ function safeCloseWs() {
   }
 }
 
-async function joinRoom(roomId, roomName, displayNo = null) {
-  await api(`/api/rooms/${roomId}/join`, { method: "POST" });
+async function joinRoom(roomId, roomName, displayNo = null, roomPassword = null, options = {}) {
+  const { allowPrompt = true } = options;
+  const roomMeta = state.roomMeta.get(roomId);
+  let password = typeof roomPassword === "string" ? roomPassword : "";
+  if (!password && roomMeta?.hasPassword) {
+    if (!allowPrompt) {
+      throw new Error("Room password required");
+    }
+    const input = prompt(`Enter password for room "${roomName}"`);
+    if (input === null) {
+      throw new Error("Join cancelled");
+    }
+    password = input;
+  }
+
+  await api(`/api/rooms/${roomId}/join`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
   state.roomId = roomId;
   const finalDisplayNo = displayNo ?? state.roomMeta.get(roomId)?.displayNo ?? 0;
   saveRoomSession(roomId, roomName, finalDisplayNo);
