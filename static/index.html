@@ -25,15 +25,15 @@
             <button id="tabRegister" class="tab">Register</button>
           </div>
 
-          <form id="loginForm" class="form">
-            <label>Username <input id="loginUsername" required minlength="3" /></label>
-            <label>Password <input id="loginPassword" required minlength="6" type="password" /></label>
+          <form id="loginForm" class="form" autocomplete="on">
+            <label>Username <input id="loginUsername" name="login_username" autocomplete="username" required minlength="3" /></label>
+            <label>Password <input id="loginPassword" name="login_password" autocomplete="current-password" required minlength="6" type="password" /></label>
             <button type="submit">Login</button>
           </form>
 
-          <form id="registerForm" class="form hidden">
-            <label>Username <input id="registerUsername" required minlength="3" /></label>
-            <label>Password <input id="registerPassword" required minlength="6" type="password" /></label>
+          <form id="registerForm" class="form hidden" autocomplete="off">
+            <label>Username <input id="registerUsername" name="register_username" autocomplete="off" required minlength="3" /></label>
+            <label>Password <input id="registerPassword" name="register_password" autocomplete="new-password" required minlength="6" type="password" /></label>
             <button type="submit">Register</button>
           </form>
 
@@ -46,9 +46,9 @@
               <h3>Choose Room</h3>
               <button id="refreshRooms">Refresh</button>
             </div>
-            <form id="createRoomForm" class="inline-form">
-              <input id="roomName" placeholder="New room name" minlength="2" maxlength="60" required />
-              <input id="roomPassword" type="password" placeholder="Room password" minlength="4" maxlength="128" required />
+            <form id="createRoomForm" class="inline-form" autocomplete="off">
+              <input id="roomName" name="room_name" autocomplete="off" placeholder="New room name" minlength="2" maxlength="60" required />
+              <input id="roomPassword" name="room_password" autocomplete="new-password" type="password" placeholder="Room password" minlength="4" maxlength="128" required />
               <button type="submit">Create</button>
             </form>
             <p id="lobbyStatus" class="status">Create a room or join an existing one.</p>
@@ -111,8 +111,11 @@
           </section>
         </section>
       </main>
+      <footer class="app-footer">
+        <span>Frontend Build: 20260321q</span>
+      </footer>
     </div>
 
-    <script type="module" src="/static/app.js?v=20260321h" defer></script>
+    <script type="module" src="/static/app.js?v=20260321q" defer></script>
   </body>
 </html>

@@ -62,7 +62,18 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS room_members (
             room_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
+            room_password_cache TEXT,
             joined_at TEXT NOT NULL,
+            PRIMARY KEY (room_id, user_id),
+            FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS room_access_cache (
+            room_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            room_password_cache TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
             PRIMARY KEY (room_id, user_id),
             FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -111,6 +122,10 @@ def init_db() -> None:
         conn.execute("ALTER TABLE rooms ADD COLUMN password_salt TEXT")
     if "password_hash" not in room_columns:
         conn.execute("ALTER TABLE rooms ADD COLUMN password_hash TEXT")
+
+    member_columns = {row[1] for row in conn.execute("PRAGMA table_info(room_members)").fetchall()}
+    if "room_password_cache" not in member_columns:
+        conn.execute("ALTER TABLE room_members ADD COLUMN room_password_cache TEXT")
 
     conn.commit()
     conn.close()

@@ -30,6 +30,7 @@ const state = {
   wsPingTimer: null,
   wsPongTimeout: null,
   roomHealthTimer: null,
+  authHealthTimer: null,
 };
 
 const tabId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -115,6 +116,25 @@ function stopRoomHealthCheck() {
     clearInterval(state.roomHealthTimer);
     state.roomHealthTimer = null;
   }
+}
+
+function stopAuthHealthCheck() {
+  if (state.authHealthTimer) {
+    clearInterval(state.authHealthTimer);
+    state.authHealthTimer = null;
+  }
+}
+
+function startAuthHealthCheck() {
+  stopAuthHealthCheck();
+  state.authHealthTimer = setInterval(async () => {
+    if (!state.token) return;
+    try {
+      await api("/api/me", { method: "GET" });
+    } catch {
+      // 401 path is handled inside api client and will force logout + popup.
+    }
+  }, 8000);
 }
 
 function startRoomHealthCheck() {
@@ -264,6 +284,7 @@ const api = createApiClient({
   stopTabLock,
   setAuthMode,
   setMessage,
+  showTab,
 });
 
 function setAuthMode(loggedIn) {
@@ -275,7 +296,9 @@ function setAuthMode(loggedIn) {
     logoutBtn.classList.remove("hidden");
     userBadge.textContent = `User: ${state.me.username}`;
     enterLobbyView(false);
+    startAuthHealthCheck();
   } else {
+    stopAuthHealthCheck();
     stopTabLock();
     userBadge.classList.add("hidden");
     logoutBtn.classList.add("hidden");
@@ -343,14 +366,13 @@ async function joinRoom(roomId, roomName, displayNo = null, roomPassword = null,
   const roomMeta = state.roomMeta.get(roomId);
   let password = typeof roomPassword === "string" ? roomPassword : "";
   if (!password && roomMeta?.hasPassword) {
-    if (!allowPrompt) {
-      throw new Error("Room password required");
+    if (allowPrompt) {
+      const input = prompt(`Enter password for room "${roomName}"`);
+      if (input === null) {
+        throw new Error("Join cancelled");
+      }
+      password = input;
     }
-    const input = prompt(`Enter password for room "${roomName}"`);
-    if (input === null) {
-      throw new Error("Join cancelled");
-    }
-    password = input;
   }
 
   await api(`/api/rooms/${roomId}/join`, {
@@ -359,7 +381,7 @@ async function joinRoom(roomId, roomName, displayNo = null, roomPassword = null,
   });
   state.roomId = roomId;
   const finalDisplayNo = displayNo ?? state.roomMeta.get(roomId)?.displayNo ?? 0;
-  saveRoomSession(roomId, roomName, finalDisplayNo);
+  saveRoomSession(roomId, roomName, finalDisplayNo, password);
   enterRoomView(roomName, roomId, finalDisplayNo);
   statusBar.textContent = "Joining room...";
   setMediaStatus("Loading media library...");
@@ -480,6 +502,9 @@ function connectWs(roomId) {
 }
 
 function applyRemoteState(data, by) {
+  if (state.activeMediaUrl && !data.videoUrl && typeof data.currentTime === "number" && data.currentTime > 0) {
+    return;
+  }
   const updatedAtMs = Date.parse(data.updatedAt || "") || 0;
   if (updatedAtMs && updatedAtMs < state.lastServerUpdatedAt) {
     return;

@@ -1,6 +1,7 @@
 // 房间页会话管理：同账号多标签页锁 + 当前房间恢复。
 
 const ROOM_SESSION_KEY = "wt_active_room";
+const ROOM_SESSION_FALLBACK_KEY = "wt_active_room_fallback";
 
 export function createTabLock(tabId) {
   let lockTimer = null;
@@ -37,10 +38,6 @@ export function createTabLock(tabId) {
 
   function startTabLock(userId) {
     const lockKey = lockKeyForUser(userId);
-    const lock = readTabLock(lockKey);
-    if (lock && lock.tabId !== tabId && Date.now() - lock.ts < 15000) {
-      throw new Error("This account is already active in another tab/window.");
-    }
     activeLockKey = lockKey;
     writeTabLock(lockKey);
     lockTimer = setInterval(() => writeTabLock(lockKey), 4000);
@@ -49,16 +46,31 @@ export function createTabLock(tabId) {
   return { startTabLock, stopTabLock };
 }
 
-export function saveRoomSession(roomId, roomName, displayNo) {
-  sessionStorage.setItem(
-    ROOM_SESSION_KEY,
-    JSON.stringify({ roomId, roomName, displayNo, savedAt: Date.now() }),
-  );
+export function saveRoomSession(roomId, roomName, displayNo, roomPassword = "") {
+  const payload = JSON.stringify({ roomId, roomName, displayNo, roomPassword, savedAt: Date.now() });
+  sessionStorage.setItem(ROOM_SESSION_KEY, payload);
+  try {
+    localStorage.setItem(ROOM_SESSION_FALLBACK_KEY, payload);
+  } catch {
+  }
 }
 
 export function readRoomSession() {
   try {
-    return JSON.parse(sessionStorage.getItem(ROOM_SESSION_KEY) || "null");
+    const primary = sessionStorage.getItem(ROOM_SESSION_KEY);
+    if (primary) {
+      return JSON.parse(primary);
+    }
+    const fallback = localStorage.getItem(ROOM_SESSION_FALLBACK_KEY);
+    if (!fallback) {
+      return null;
+    }
+    const parsed = JSON.parse(fallback);
+    if (!parsed || !parsed.savedAt || Date.now() - parsed.savedAt > 24 * 3600 * 1000) {
+      localStorage.removeItem(ROOM_SESSION_FALLBACK_KEY);
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -66,4 +78,8 @@ export function readRoomSession() {
 
 export function clearRoomSession() {
   sessionStorage.removeItem(ROOM_SESSION_KEY);
+  try {
+    localStorage.removeItem(ROOM_SESSION_FALLBACK_KEY);
+  } catch {
+  }
 }

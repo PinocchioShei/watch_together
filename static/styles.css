@@ -27,6 +27,14 @@ body {
   padding: 20px;
 }
 
+.app-footer {
+  margin-top: 14px;
+  text-align: right;
+  color: #64748b;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+
 .page.auth-only .layout {
   min-height: calc(100vh - 110px);
   display: flex;

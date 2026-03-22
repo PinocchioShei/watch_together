@@ -39,7 +39,34 @@ export function createLobbyModule(ctx) {
       const joinBtn = document.createElement("button");
       const lockMark = room.hasPassword ? " [locked]" : "";
       joinBtn.textContent = `#${room.displayNo} ${room.name}${lockMark}  | owner: ${room.owner}  | members: ${room.members}`;
-      joinBtn.onclick = () => joinRoom(room.id, room.name, room.displayNo, null, { allowPrompt: true });
+      joinBtn.onclick = async () => {
+        try {
+          await joinRoom(room.id, room.name, room.displayNo, "", { allowPrompt: false });
+        } catch (err) {
+          const msg = String(err?.message || "");
+          if (/invalid room password/i.test(msg)) {
+            const input = prompt(`Enter password for room "${room.name}"`);
+            if (input === null) {
+              setLobbyStatus("Join cancelled.", true);
+              return;
+            }
+            try {
+              await joinRoom(room.id, room.name, room.displayNo, input, { allowPrompt: false });
+              return;
+            } catch (retryErr) {
+              const retryMsg = String(retryErr?.message || "");
+              if (/invalid room password/i.test(retryMsg)) {
+                setLobbyStatus("Wrong room password.", true);
+                return;
+              }
+              setLobbyStatus(retryMsg || "Join failed", true);
+              return;
+            }
+          } else if (!/join cancelled/i.test(msg.toLowerCase())) {
+            setLobbyStatus(msg || "Join failed", true);
+          }
+        }
+      };
       row.appendChild(joinBtn);
 
       if (state.me && room.ownerId === state.me.id) {
@@ -80,9 +107,23 @@ export function createLobbyModule(ctx) {
       return;
     }
     try {
-      await joinRoom(match.id, match.name, match.displayNo);
+      await joinRoom(match.id, match.name, match.displayNo, saved.roomPassword || "", { allowPrompt: false });
       setLobbyStatus("Restored previous room.");
-    } catch {
+    } catch (err) {
+      const msg = String(err?.message || "").toLowerCase();
+      if (msg.includes("invalid room password")) {
+        setLobbyStatus("Saved room password is no longer valid. Please re-enter password.", true);
+        try {
+          await joinRoom(match.id, match.name, match.displayNo, null, { allowPrompt: true });
+          setLobbyStatus("Restored previous room.");
+          return;
+        } catch (retryErr) {
+          const retryMsg = String(retryErr?.message || "").toLowerCase();
+          if (retryMsg.includes("invalid room password")) {
+            setLobbyStatus("Wrong room password.", true);
+          }
+        }
+      }
       clearRoomSession();
     }
   }

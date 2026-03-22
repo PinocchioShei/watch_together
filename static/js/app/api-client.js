@@ -7,6 +7,7 @@ export function createApiClient(ctx) {
     stopTabLock,
     setAuthMode,
     setMessage,
+    showTab,
   } = ctx;
 
   async function doFetchWithRetry(path, requestOptions) {
@@ -79,22 +80,11 @@ export function createApiClient(ctx) {
         state.forceTakeover = false;
         state.localOverrideUntil = 0;
         setAuthMode(false);
+        if (typeof showTab === "function") {
+          showTab("login");
+        }
+        alert("You were signed out because this account was used elsewhere. Please login again.");
         setMessage("Session expired. Please login again.", true);
-      }
-
-      if (res.status === 409) {
-        safeCloseWs();
-        stopTabLock();
-        state.token = "";
-        sessionStorage.removeItem("wt_token");
-        state.me = null;
-        state.roomId = null;
-        state.roomDisplayNo = null;
-        state.controllerUserId = null;
-        state.forceTakeover = false;
-        state.localOverrideUntil = 0;
-        setAuthMode(false);
-        setMessage(detail || "Your account signed in elsewhere.", true);
       }
 
       throw new Error(detail);

@@ -234,11 +234,13 @@ def probe_media(file_path: Path) -> dict[str, Any]:
         "-show_streams",
         str(file_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=False)
     if result.returncode != 0:
-        raise HTTPException(status_code=400, detail="Cannot parse uploaded media")
+        detail = (result.stderr or b"").decode("utf-8", errors="ignore")[-300:]
+        raise HTTPException(status_code=400, detail=f"Cannot parse uploaded media: {detail or 'ffprobe failed'}")
     try:
-        return json.loads(result.stdout)
+        stdout_text = (result.stdout or b"").decode("utf-8", errors="ignore")
+        return json.loads(stdout_text)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid media metadata") from exc
 

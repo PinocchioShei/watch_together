@@ -1,6 +1,5 @@
 """FastAPI 路由装配与应用创建。"""
 
-import asyncio
 import json
 import sqlite3
 from contextlib import asynccontextmanager
@@ -96,8 +95,6 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
-    owner_cleanup_tasks: dict[int, asyncio.Task] = {}
-
     async def build_room_members_payload(room_id: int) -> dict:
         online_ids = await hub.room_user_ids(room_id)
         if not online_ids:
@@ -120,37 +117,6 @@ def create_app() -> FastAPI:
 
     async def broadcast_room_members(room_id: int) -> None:
         await hub.broadcast(room_id, await build_room_members_payload(room_id))
-
-    def cancel_owner_cleanup(room_id: int) -> None:
-        task = owner_cleanup_tasks.pop(room_id, None)
-        if task and not task.done():
-            task.cancel()
-
-    def schedule_owner_cleanup(room_id: int, owner_id: int, owner_name: str, grace_seconds: int = 12) -> None:
-        cancel_owner_cleanup(room_id)
-
-        async def _cleanup() -> None:
-            try:
-                await asyncio.sleep(grace_seconds)
-                if await hub.has_user(room_id, owner_id):
-                    return
-                conn = db_conn()
-                try:
-                    room = conn.execute("SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
-                    if not room or room["owner_id"] != owner_id:
-                        return
-                    room_name = room["name"]
-                    conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
-                    conn.commit()
-                finally:
-                    conn.close()
-                await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": owner_name})
-            except asyncio.CancelledError:
-                return
-            finally:
-                owner_cleanup_tasks.pop(room_id, None)
-
-        owner_cleanup_tasks[room_id] = asyncio.create_task(_cleanup())
 
     @app.get("/")
     def index() -> FileResponse:
@@ -344,7 +310,6 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/admin/rooms/{room_id}")
     async def admin_delete_room(room_id: int, _: str = Depends(require_admin)):
-        cancel_owner_cleanup(room_id)
         conn = db_conn()
         try:
             room = conn.execute("SELECT id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
@@ -381,7 +346,7 @@ def create_app() -> FastAPI:
             conn.close()
 
     @app.post("/api/login")
-    async def login(payload: LoginPayload, request: Request):
+    async def login(payload: LoginPayload):
         conn = db_conn()
         try:
             row = conn.execute(
@@ -391,17 +356,17 @@ def create_app() -> FastAPI:
             if not row or not verify_password(payload.password, row["password_salt"], row["password_hash"]):
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
-            existing = conn.execute(
-                "SELECT token, expires_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            existing_rows = conn.execute(
+                "SELECT token, expires_at FROM sessions WHERE user_id = ?",
                 (row["id"],),
-            ).fetchone()
-            current_cookie = request.cookies.get("session_token")
-            if existing:
-                if str_to_dt(existing["expires_at"]) < now_utc():
-                    conn.execute("DELETE FROM sessions WHERE token = ?", (existing["token"],))
-                    conn.commit()
-                elif existing["token"] != current_cookie:
-                    raise HTTPException(status_code=409, detail="Account already logged in on another device")
+            ).fetchall()
+            if existing_rows:
+                valid_tokens = [r["token"] for r in existing_rows if str_to_dt(r["expires_at"]) >= now_utc()]
+                # 放宽策略：新登录覆盖旧会话，避免本机退登后短暂锁死。
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+                conn.commit()
+                if valid_tokens:
+                    await hub.disconnect_user(int(row["id"]))
 
             token = create_session(conn, row["id"])
             res = JSONResponse({"ok": True, "token": token})
@@ -484,7 +449,10 @@ def create_app() -> FastAPI:
                 (room_name, user.id, room_salt, room_hash, dt_to_str(now_utc())),
             )
             room_id = cursor.lastrowid
-            conn.execute("INSERT INTO room_members(room_id, user_id, joined_at) VALUES (?, ?, ?)", (room_id, user.id, dt_to_str(now_utc())))
+            conn.execute(
+                "INSERT INTO room_members(room_id, user_id, room_password_cache, joined_at) VALUES (?, ?, ?, ?)",
+                (room_id, user.id, room_password, dt_to_str(now_utc())),
+            )
             conn.execute(
                 "INSERT INTO room_state(room_id, updated_at, updated_by, controller_user_id) VALUES (?, ?, ?, ?)",
                 (room_id, dt_to_str(now_utc()), user.id, user.id),
@@ -504,18 +472,54 @@ def create_app() -> FastAPI:
 
             room_salt = room["password_salt"]
             room_hash = room["password_hash"]
-            if room_salt and room_hash and not verify_password(payload.password, room_salt, room_hash):
-                raise HTTPException(status_code=403, detail="Invalid room password")
-            if room["owner_id"] == user.id:
-                cancel_owner_cleanup(room_id)
+            member = conn.execute(
+                "SELECT room_password_cache FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room_id, user.id),
+            ).fetchone()
+            access_cache = conn.execute(
+                "SELECT room_password_cache FROM room_access_cache WHERE room_id = ? AND user_id = ?",
+                (room_id, user.id),
+            ).fetchone()
+            cached_password = (member["room_password_cache"] or "") if member else ""
+            access_cached_password = (access_cache["room_password_cache"] or "") if access_cache else ""
+            submitted_password = (payload.password or "").strip()
+
+            if room_salt and room_hash:
+                password_ok = False
+                if submitted_password:
+                    password_ok = verify_password(submitted_password, room_salt, room_hash)
+                elif cached_password:
+                    password_ok = verify_password(cached_password, room_salt, room_hash)
+                elif access_cached_password:
+                    password_ok = verify_password(access_cached_password, room_salt, room_hash)
+                if not password_ok:
+                    raise HTTPException(status_code=403, detail="Invalid room password")
+
+            cache_to_save = submitted_password or cached_password or access_cached_password
             conn.execute(
                 """
-                INSERT INTO room_members(room_id, user_id, joined_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(room_id, user_id) DO NOTHING
+                INSERT INTO room_members(room_id, user_id, room_password_cache, joined_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(room_id, user_id) DO UPDATE SET
+                    room_password_cache = CASE
+                        WHEN excluded.room_password_cache IS NULL OR excluded.room_password_cache = '' THEN room_members.room_password_cache
+                        ELSE excluded.room_password_cache
+                    END,
+                    joined_at = excluded.joined_at
                 """,
-                (room_id, user.id, dt_to_str(now_utc())),
+                (room_id, user.id, cache_to_save, dt_to_str(now_utc())),
             )
+            if cache_to_save:
+                conn.execute(
+                    """
+                    INSERT INTO room_access_cache(room_id, user_id, room_password_cache, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(room_id, user_id) DO UPDATE SET
+                        room_password_cache = excluded.room_password_cache,
+                        updated_at = excluded.updated_at
+                    """,
+                    (room_id, user.id, cache_to_save, dt_to_str(now_utc())),
+                )
             conn.commit()
             return {"ok": True}
         finally:
@@ -570,7 +574,6 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/rooms/{room_id}")
     async def delete_room(room_id: int, user: User = Depends(require_user)):
-        cancel_owner_cleanup(room_id)
         conn = db_conn()
         try:
             room = conn.execute("SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
@@ -613,7 +616,6 @@ def create_app() -> FastAPI:
 
         if deleted:
             await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": user.username})
-            cancel_owner_cleanup(room_id)
         else:
             await broadcast_room_members(room_id)
         return {"ok": True, "roomDeleted": deleted}
@@ -642,8 +644,6 @@ def create_app() -> FastAPI:
 
         await websocket.accept()
         await hub.add(room_id, websocket, user.id)
-        if is_owner:
-            cancel_owner_cleanup(room_id)
         await broadcast_room_members(room_id)
 
         try:
@@ -820,13 +820,5 @@ def create_app() -> FastAPI:
                 cleanup_conn.close()
 
             await broadcast_room_members(room_id)
-
-            owner_conn = db_conn()
-            try:
-                room = owner_conn.execute("SELECT id, owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
-            finally:
-                owner_conn.close()
-            if room and room["owner_id"] == user.id and not await hub.has_user(room_id, user.id):
-                schedule_owner_cleanup(room_id, user.id, user.username)
 
     return app

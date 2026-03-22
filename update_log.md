@@ -159,3 +159,62 @@
 - Added room password protection: room creation now requires a password, and join requests must provide matching password.
 - Updated lobby UI for password flow: create form includes room password field, and join action prompts user for locked room password.
 - Added room schema/storage migration support for password hash fields and bumped app cache version (`app.js?v=20260321h`).
+
+## 2026-03-21 18:54
+- Relaxed user session login policy: new login now replaces stale/active sessions for the same account to avoid frequent relogin lockouts after logout.
+- Added server-side active-session cleanup + WS disconnect-on-relogin behavior so account state remains consistent without requiring page refresh loops.
+
+## 2026-03-21 19:03
+- Added forced-signout UX: when a session is replaced by another login, the previous client now shows a popup and jumps back to login tab.
+- Bumped frontend cache version (`app.js?v=20260321i`).
+
+## 2026-03-21 19:16
+- Added global auth health polling (`/api/me` every 8s) so kicked sessions get immediate forced-signout popup without requiring manual refresh.
+- Bumped frontend cache version (`app.js?v=20260321j`).
+
+## 2026-03-21 19:22
+- Fixed browser autofill leakage into room creation fields by adding explicit input names and autocomplete hints for auth vs room forms.
+- Prevented login credentials from auto-populating room name/password fields (`autocomplete=off/new-password` on lobby form).
+- Bumped frontend cache version (`app.js?v=20260321k`).
+
+## 2026-03-21 19:31
+- Removed owner-offline auto-delete policy: room is no longer deleted when owner disconnects unexpectedly (e.g., mobile background kill/network drop).
+- Room deletion now happens only on explicit owner actions (manual `Leave Room` / owner delete) or admin delete.
+
+## 2026-03-21 19:40
+- Improved password-room refresh UX: room restore now reuses saved room password from session storage so refresh/reconnect no longer prompts repeatedly.
+- Bumped frontend cache version (`app.js?v=20260321l`).
+
+## 2026-03-21 19:52
+- Fixed mobile refresh restore for password rooms by adding localStorage fallback for saved room session (24h TTL) when sessionStorage is cleared by browser lifecycle.
+- Added explicit wrong-password feedback on join attempts (status message) instead of silent fallback.
+- Bumped frontend cache version (`app.js?v=20260321m`).
+
+## 2026-03-21 20:08
+- Fixed password-room mobile refresh behavior by storing verified room password cache per member on server (`room_members.room_password_cache`) and allowing join validation fallback when payload password is empty.
+- Improved refresh restore UX: when saved password becomes invalid, client now immediately re-prompts for password instead of silently clearing room session.
+- Added client guard against stale empty-media state packets that could reset active playback UI to 0 during reconnect race.
+- Bumped frontend cache version (`app.js?v=20260321n`).
+
+## 2026-03-21 20:19
+- Fixed password restore regression: auto-restore join no longer forces prompt when local password cache is missing; it now attempts server-side cached password fallback first.
+- Bumped frontend cache version (`app.js?v=20260321o`).
+
+## 2026-03-21 20:29
+- Fixed restore blocker from stale multi-tab lock check: startup tab-lock no longer throws on mobile/browser lifecycle resume, which previously interrupted auto room restore before password fallback.
+- Bumped frontend cache version (`app.js?v=20260321p`).
+
+## 2026-03-21 20:35
+- Added visible frontend build label at page footer (`Frontend Build: 20260321p`) to help verify cache refresh status across desktop/mobile browsers.
+
+## 2026-03-21 20:44
+- Added room access cache for rejoin UX: users who previously entered a password room can leave and rejoin without re-entering password while room password remains unchanged.
+- Password verification now checks member cache first, then persistent access cache fallback before prompting user.
+
+## 2026-03-21 20:52
+- Fixed frontend join flow to actually use server-side password cache: join now first attempts silent empty-password request, and only prompts when server returns invalid password.
+- Prevented unconditional prompt on room button click, which previously masked cache hits and made rejoin always ask for password.
+- Bumped frontend cache version (`app.js?v=20260321q`).
+
+## 2026-03-21 20:57
+- Updated footer build label to match runtime asset version (`Frontend Build: 20260321q`) for accurate cache diagnostics.
