@@ -133,18 +133,39 @@ th, td {
 .users-table td:nth-child(3) { width: 40%; }
 
 .media-table th:nth-child(1),
-.media-table td:nth-child(1) { width: 24%; }
+.media-table td:nth-child(1) { width: 25%; }
 
 .media-table th:nth-child(2),
 .media-table td:nth-child(2),
 .media-table th:nth-child(3),
-.media-table td:nth-child(3) { width: 27%; }
+.media-table td:nth-child(3) { width: 12%; }
 
 .media-table th:nth-child(4),
-.media-table td:nth-child(4) { width: 10%; }
+.media-table td:nth-child(4) { width: 12%; }
 
 .media-table th:nth-child(5),
-.media-table td:nth-child(5) { width: 12%; }
+.media-table td:nth-child(5) { width: 14%; }
+
+.state-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.state-badge.yes {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.14);
+  border: 1px solid rgba(34, 197, 94, 0.45);
+}
+
+.state-badge.no {
+  color: #f97316;
+  background: rgba(249, 115, 22, 0.14);
+  border: 1px solid rgba(249, 115, 22, 0.35);
+}
 
 .rooms-table th:nth-child(1),
 .rooms-table td:nth-child(1) { width: 10%; }

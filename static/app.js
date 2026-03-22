@@ -649,19 +649,20 @@ tabRegister.onclick = () => showTab("register");
 importForm.onsubmit = async (e) => {
   e.preventDefault();
   if (!videoFileInput.files || !videoFileInput.files[0]) {
-    setMediaStatus("Choose a local video first.", true);
+    setMediaStatus("Choose a local media file first.", true);
     return;
   }
   try {
-    setMediaStatus("Importing video into library...");
+    setMediaStatus("Importing media into library...");
     const fd = new FormData();
     fd.append("file", videoFileInput.files[0]);
     const upload = await api("/api/upload-video", { method: "POST", body: fd });
     videoFileInput.value = "";
     const profile = upload.profile || {};
-    const transcodeText = upload.transcoded ? "transcoded to H.264/AAC MP4" : "already browser-friendly";
+    const modeText = upload.videoUrl ? "video/audio" : "audio-only";
+    const transcodeText = upload.transcoded ? "transcoded" : "direct import";
     setMediaStatus(
-      `Imported (${profile.container || "unknown"}/${profile.videoCodec || "unknown"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
+      `Imported (${modeText}, ${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
     );
     await loadMediaLibrary();
   } catch (err) {

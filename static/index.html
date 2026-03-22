@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Local</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260321b" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260321d" />
   </head>
   <body>
     <div class="page auth-only">
@@ -77,10 +77,10 @@
                 <p id="mediaStatus" class="status">Select a media file to play and sync.</p>
 
                 <form id="importForm" class="inline-form import-form">
-                  <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov" />
+                  <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" />
                   <button type="submit">Import To Library</button>
                 </form>
-                <p class="status">Import saves video to `media/video` and extracted audio to `media/audio`.</p>
+                <p class="status">Import saves each work into `media/work/<work>/` with video/audio files when available.</p>
               </aside>
 
               <div class="video-column">
@@ -116,6 +116,6 @@
       </footer>
     </div>
 
-    <script type="module" src="/static/app.js?v=20260321q" defer></script>
+    <script type="module" src="/static/app.js?v=20260321r" defer></script>
   </body>
 </html>

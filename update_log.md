@@ -218,3 +218,49 @@
 
 ## 2026-03-21 20:57
 - Updated footer build label to match runtime asset version (`Frontend Build: 20260321q`) for accurate cache diagnostics.
+
+## 2026-03-21 21:10
+- Constrained room media source panel to fixed viewport-aware height with internal scroll, preventing layout stretch when media list grows large.
+- Added mobile-specific cap for media list scroll area and bumped stylesheet cache version (`styles.css?v=20260321c`).
+
+## 2026-03-21 21:38
+- Migrated media storage layout to per-work folders: each work now lives under `media/work/<work_name>/` containing its video/audio files.
+- Added startup media migration to move legacy flat files (`media/video`, `media/audio`) into work folders and rewrite DB URLs to `/media/work/...` paths.
+- Updated media URL validation/normalization and play-mode detection to support the new nested media path format.
+
+## 2026-03-21 21:46
+- Updated admin media panel for new storage layout: media table now shows work folder name and per-work video/audio filenames instead of legacy flat-path columns.
+- Synced admin asset cache versions (`admin.css/js?v=20260321f`).
+
+## 2026-03-21 21:53
+- Simplified admin media table to boolean availability flags (`Video: Yes/No`, `Audio: Yes/No`) instead of full file names, matching unified per-work naming.
+- Bumped admin script cache version (`admin.js?v=20260321g`).
+
+## 2026-03-21 22:02
+- Enhanced admin media availability display with color-highlighted badges (`Yes` green / `No` orange) for faster scanning.
+- Merged redundant media columns: `Name` + `Work Folder` condensed into single `Work` column to save panel width.
+- Updated import naming rule: new works now default to folder-name identity (no forced `_001` suffix), with numeric suffix only on true conflicts.
+- Synced admin asset cache versions (`admin.css?v=20260321g`, `admin.js?v=20260321h`).
+
+## 2026-03-21 22:16
+- Added admin work-rename capability: new API `PATCH /api/admin/media/{mediaKey}` renames work folder and updates DB media URLs/title in one operation.
+- Added `Rename` action in admin media panel row actions for direct work-name edits.
+- Bumped admin script cache version (`admin.js?v=20260321i`).
+
+## 2026-03-21 22:24
+- Fixed admin rename action feedback path: work-rename now URL-encodes media key and surfaces success/error message in panel status.
+- Adjusted admin media `Work` column width to half of previous value for denser table layout.
+- Bumped admin asset cache versions (`admin.css?v=20260321h`, `admin.js?v=20260321j`).
+
+## 2026-03-21 22:33
+- Unified runtime startup script for both service ports: `start_watch_together_server.ps1` now boots and refreshes `8090` + `8091` together to prevent version mismatch between main/app-admin backends.
+
+## 2026-03-21 22:41
+- Updated import rule to support audio-only works: admin import now accepts pure audio files and records them as `videoUrl=''` + valid `audioUrl` in media assets.
+- Extended admin upload file chooser accept types for audio formats (`.mp3/.aac/.wav/.m4a`) and improved import status text to indicate audio-only imports.
+- Bumped admin script cache version (`admin.js?v=20260321k`).
+
+## 2026-03-21 22:48
+- Synced user room import UI with new media rules: upload chooser now accepts audio formats and import copy updated to `media/work/<work>/` layout.
+- Updated user-side import status text to differentiate `audio-only` vs `video/audio` imports.
+- Bumped main frontend cache versions (`styles.css?v=20260321d`, `app.js?v=20260321r`).

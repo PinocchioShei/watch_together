@@ -44,6 +44,10 @@ class AdminUpdateProfilePayload(BaseModel):
     newPassword: str | None = Field(default=None, min_length=6, max_length=128)
 
 
+class AdminRenameMediaPayload(BaseModel):
+    newWorkName: str = Field(min_length=1, max_length=64)
+
+
 @dataclass
 class User:
     id: int

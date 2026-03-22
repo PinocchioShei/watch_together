@@ -22,15 +22,19 @@ from .config import ADMIN_PASSWORD, ADMIN_USERNAME, MEDIA_DIR, STATIC_DIR
 from .media import (
     collect_media_files,
     import_media_file,
+    is_audio_media_url,
     is_valid_media_url,
     list_media_library,
+    migrate_media_layout,
     normalize_media_url,
+    rename_media_work,
     remove_media_by_stem,
     stem_from_media_url,
 )
 from .schemas import (
     AdminCreateUserPayload,
     AdminLoginPayload,
+    AdminRenameMediaPayload,
     AdminUpdateProfilePayload,
     AdminUpdateUserPayload,
     LoginPayload,
@@ -74,6 +78,11 @@ def ensure_admin_account(conn: sqlite3.Connection):
 async def lifespan(_: FastAPI):
     # 启动时保证目录与数据库结构可用。
     init_db()
+    conn = db_conn()
+    try:
+        migrate_media_layout(conn)
+    finally:
+        conn.close()
     yield
 
 
@@ -305,6 +314,14 @@ def create_app() -> FastAPI:
         try:
             result = remove_media_by_stem(conn, media_key)
             return {"ok": True, **result}
+        finally:
+            conn.close()
+
+    @app.patch("/api/admin/media/{media_key}")
+    def admin_rename_media(media_key: str, payload: AdminRenameMediaPayload, _: str = Depends(require_admin)):
+        conn = db_conn()
+        try:
+            return rename_media_work(conn, media_key, payload.newWorkName)
         finally:
             conn.close()
 
@@ -558,7 +575,7 @@ def create_app() -> FastAPI:
             if safe_video_url and safe_video_url != (state["video_url"] or ""):
                 conn.execute("UPDATE room_state SET video_url = ?, updated_at = ? WHERE room_id = ?", (safe_video_url, dt_to_str(now_utc()), room_id))
                 conn.commit()
-            play_mode = "audio" if safe_video_url.startswith("/media/audio/") else "video"
+            play_mode = "audio" if is_audio_media_url(safe_video_url) else "video"
             can_control = controller_user_id in (None, user.id)
             return {
                 "videoUrl": safe_video_url,
@@ -660,7 +677,7 @@ def create_app() -> FastAPI:
             initial_raw = state["video_url"] if state else ""
             normalized_initial = normalize_media_url(initial_raw)
             initial_video_url = normalized_initial if is_valid_media_url(normalized_initial) else ""
-            initial_play_mode = "audio" if initial_video_url.startswith("/media/audio/") else "video"
+            initial_play_mode = "audio" if is_audio_media_url(initial_video_url) else "video"
             initial_controller = state["controller_user_id"] if state else user.id
             if initial_controller is not None and not await hub.has_user(room_id, int(initial_controller)):
                 initial_controller = None
@@ -699,7 +716,7 @@ def create_app() -> FastAPI:
                     video_url = normalize_media_url(video_url)
                     play_mode = str(payload.get("playMode", "video")).strip().lower()
                     if play_mode not in {"video", "audio"}:
-                        play_mode = "audio" if video_url.startswith("/media/audio/") else "video"
+                        play_mode = "audio" if is_audio_media_url(video_url) else "video"
                     if not is_valid_media_url(video_url):
                         await websocket.send_text(json.dumps({"type": "error", "message": "Only media files under /media are allowed"}))
                         continue
@@ -807,7 +824,7 @@ def create_app() -> FastAPI:
                         {
                             "type": "state",
                             "videoUrl": safe_url,
-                            "playMode": "audio" if safe_url.startswith("/media/audio/") else "video",
+                            "playMode": "audio" if is_audio_media_url(safe_url) else "video",
                             "currentTime": safe_float(row["current_time_sec"], 0.0),
                             "isPlaying": bool(row["is_playing"]),
                             "updatedAt": dt_to_str(now_utc()),

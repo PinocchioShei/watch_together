@@ -10,6 +10,7 @@ DB_PATH = BASE_DIR / "watch_together.db"
 STATIC_DIR = BASE_DIR / "static"
 
 MEDIA_DIR = BASE_DIR / "media"
+MEDIA_WORK_DIR = MEDIA_DIR
 MEDIA_VIDEO_DIR = MEDIA_DIR / "video"
 MEDIA_AUDIO_DIR = MEDIA_DIR / "audio"
 MEDIA_TMP_DIR = MEDIA_DIR / "tmp"

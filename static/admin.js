@@ -30,6 +30,13 @@ function setAdminProfileMsg(msg, err = false) {
   adminProfileMsg.style.color = err ? "#fca5a5" : "#94a3b8";
 }
 
+function parseWorkPath(url) {
+  if (!url) return { work: "-", file: "-" };
+  const m = String(url).match(/^\/media\/work\/([^/]+)\/([^/]+)$/);
+  if (!m) return { work: "legacy", file: url };
+  return { work: m[1], file: m[2] };
+}
+
 function setAuthUI(ok) {
   loginCard.classList.toggle("hidden", ok);
   dashboard.classList.toggle("hidden", !ok);
@@ -102,12 +109,35 @@ async function loadUsers() {
 async function loadMedia() {
   const data = await api("/api/admin/media", { method: "GET" });
   const rows = data.items || [];
-  let html = "<table class=\"media-table\"><thead><tr><th>Name</th><th>Video</th><th>Audio</th><th>Size</th><th>Actions</th></tr></thead><tbody>";
+  let html = "<table class=\"media-table\"><thead><tr><th>Work</th><th>Video</th><th>Audio</th><th>Size</th><th>Actions</th></tr></thead><tbody>";
   rows.forEach((m) => {
-    html += `<tr><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.videoUrl || "-")}</td><td>${escapeHtml(m.audioUrl || "-")}</td><td>${formatBytes(m.size || 0)}</td><td><div class=\"row-actions\"><button class=\"danger\" data-del-media=\"${escapeHtml(m.mediaKey || "")}\">Delete</button></div></td></tr>`;
+    const v = parseWorkPath(m.videoUrl || "");
+    const a = parseWorkPath(m.audioUrl || "");
+    const workFolder = v.work !== "-" ? v.work : a.work;
+    const videoState = v.file && v.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
+    const audioState = a.file && a.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
+    html += `<tr><td>${escapeHtml(workFolder || m.name || "-")}</td><td>${videoState}</td><td>${audioState}</td><td>${formatBytes(m.size || 0)}</td><td><div class=\"row-actions\"><button data-rename-media=\"${escapeHtml(m.mediaKey || "")}\">Rename</button><button class=\"danger\" data-del-media=\"${escapeHtml(m.mediaKey || "")}\">Delete</button></div></td></tr>`;
   });
   html += "</tbody></table>";
   mediaTable.innerHTML = html;
+
+  mediaTable.querySelectorAll("button[data-rename-media]").forEach((btn) => {
+    btn.onclick = async () => {
+      const mediaKey = btn.getAttribute("data-rename-media");
+      const nextName = prompt("New work folder name:");
+      if (!nextName || !nextName.trim()) return;
+      try {
+        await api(`/api/admin/media/${encodeURIComponent(mediaKey)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ newWorkName: nextName.trim() }),
+        });
+        setImportMsg("Work renamed.");
+        await loadMedia();
+      } catch (err) {
+        setImportMsg(err.message || "Rename failed", true);
+      }
+    };
+  });
 
   mediaTable.querySelectorAll("button[data-del-media]").forEach((btn) => {
     btn.onclick = async () => {
@@ -236,7 +266,8 @@ document.getElementById("importForm").onsubmit = async (e) => {
     const fd = new FormData();
     fd.append("file", fileInput.files[0]);
     const data = await api("/api/admin/import", { method: "POST", body: fd });
-    setImportMsg(`Imported. video=${data.videoUrl || "-"} audio=${data.audioUrl || "-"}`);
+    const mode = data.videoUrl ? "video/audio" : "audio-only";
+    setImportMsg(`Imported (${mode}). video=${data.videoUrl || "-"} audio=${data.audioUrl || "-"}`);
     fileInput.value = "";
     await loadMedia();
     await loadOverview();
