@@ -30,6 +30,37 @@ function setAdminProfileMsg(msg, err = false) {
   adminProfileMsg.style.color = err ? "#fca5a5" : "#94a3b8";
 }
 
+function formatImportError(detail) {
+  const raw = String(detail || "").trim();
+  const msg = raw || "Request failed";
+  const lower = msg.toLowerCase();
+  if (lower.includes("invalid media type")) {
+    return "Import failed: invalid type. Choose movie/RJ/ASMR/music/shot.";
+  }
+  if (lower.includes("only supported video/audio formats")) {
+    return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a.";
+  }
+  if (lower.includes("file too large")) {
+    return "Import failed: file too large (max 1GB).";
+  }
+  if (lower.includes("cannot parse uploaded media") || lower.includes("invalid media metadata")) {
+    return `Import failed: cannot parse media file. ${msg}`;
+  }
+  if (lower.includes("uploaded file has no audio or video stream")) {
+    return "Import failed: file has no playable audio/video stream.";
+  }
+  if (lower.includes("invalid cover image")) {
+    return "Import failed: cover image is invalid. Use jpg/png.";
+  }
+  if (lower.includes("default cover") || lower.includes("failed to create default cover")) {
+    return `Import failed: server cover fallback error. ${msg}`;
+  }
+  if (lower.includes("transcode failed") || lower.includes("audio import failed")) {
+    return `Import failed during ffmpeg processing. ${msg}`;
+  }
+  return `Import failed: ${msg}`;
+}
+
 function parseWorkPath(url) {
   if (!url) return { work: "-", file: "-" };
   const m = String(url).match(/^\/media\/work\/([^/]+)\/([^/]+)$/);
@@ -109,14 +140,14 @@ async function loadUsers() {
 async function loadMedia() {
   const data = await api("/api/admin/media", { method: "GET" });
   const rows = data.items || [];
-  let html = "<table class=\"media-table\"><thead><tr><th>Work</th><th>Video</th><th>Audio</th><th>Size</th><th>Actions</th></tr></thead><tbody>";
+  let html = "<table class=\"media-table\"><thead><tr><th>Work</th><th>Type</th><th>Video</th><th>Audio</th><th>Size</th><th>Actions</th></tr></thead><tbody>";
   rows.forEach((m) => {
     const v = parseWorkPath(m.videoUrl || "");
     const a = parseWorkPath(m.audioUrl || "");
     const workFolder = v.work !== "-" ? v.work : a.work;
     const videoState = v.file && v.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
     const audioState = a.file && a.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
-    html += `<tr><td>${escapeHtml(workFolder || m.name || "-")}</td><td>${videoState}</td><td>${audioState}</td><td>${formatBytes(m.size || 0)}</td><td><div class=\"row-actions\"><button data-rename-media=\"${escapeHtml(m.mediaKey || "")}\">Rename</button><button class=\"danger\" data-del-media=\"${escapeHtml(m.mediaKey || "")}\">Delete</button></div></td></tr>`;
+    html += `<tr><td>${escapeHtml(workFolder || m.name || "-")}</td><td>${escapeHtml(m.type || "movie")}</td><td>${videoState}</td><td>${audioState}</td><td>${formatBytes(m.size || 0)}</td><td><div class=\"row-actions\"><button data-rename-media=\"${escapeHtml(m.mediaKey || "")}\">Rename</button><button class=\"danger\" data-del-media=\"${escapeHtml(m.mediaKey || "")}\">Delete</button></div></td></tr>`;
   });
   html += "</tbody></table>";
   mediaTable.innerHTML = html;
@@ -257,22 +288,33 @@ document.getElementById("updateAdminForm").onsubmit = async (e) => {
 document.getElementById("importForm").onsubmit = async (e) => {
   e.preventDefault();
   const fileInput = document.getElementById("importFile");
+  const typeSelect = document.getElementById("importType");
+  const coverInput = document.getElementById("importCover");
   if (!fileInput.files || !fileInput.files[0]) {
     setImportMsg("Choose a file first.", true);
+    return;
+  }
+  if (!typeSelect.value) {
+    setImportMsg("Choose media type first.", true);
     return;
   }
   try {
     setImportMsg("Importing and transcoding...");
     const fd = new FormData();
     fd.append("file", fileInput.files[0]);
+    fd.append("media_type", typeSelect.value);
+    if (coverInput.files && coverInput.files[0]) {
+      fd.append("cover", coverInput.files[0]);
+    }
     const data = await api("/api/admin/import", { method: "POST", body: fd });
     const mode = data.videoUrl ? "video/audio" : "audio-only";
     setImportMsg(`Imported (${mode}). video=${data.videoUrl || "-"} audio=${data.audioUrl || "-"}`);
     fileInput.value = "";
+    coverInput.value = "";
     await loadMedia();
     await loadOverview();
   } catch (err) {
-    setImportMsg(err.message, true);
+    setImportMsg(formatImportError(err?.message), true);
   }
 };
 

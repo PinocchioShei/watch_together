@@ -26,6 +26,7 @@ from .utils import dt_to_str, now_utc
 
 
 MEDIA_WORK_SUBDIR = MEDIA_WORK_DIR / "work"
+MEDIA_TYPE_OPTIONS = {"movie", "RJ", "ASMR", "music", "shot"}
 
 
 def sanitize_filename_stem(name: str) -> str:
@@ -104,6 +105,93 @@ def _find_first_media_file(work_dir: Path, ext_set: set[str], name_prefix: str |
     return sorted(files, key=lambda p: p.name.lower())[0]
 
 
+def _guess_media_type(title: str) -> str:
+    text = (title or "").lower()
+    if any(k in text for k in ["asmr", "睡", "耳", "舔", "voice"]):
+        return "ASMR"
+    if any(k in text for k in ["rj", "dlsite"]):
+        return "RJ"
+    if any(k in text for k in ["music", "song", "ost", "曲", "歌"]):
+        return "music"
+    if any(k in text for k in ["shot", "clip", "cut", "短片", "片段"]):
+        return "shot"
+    return "movie"
+
+
+def _default_cover_path() -> Path:
+    return MEDIA_WORK_DIR / "default_cover.jpg"
+
+
+def _ensure_default_cover() -> Path:
+    default_cover = _default_cover_path()
+    if default_cover.exists():
+        return default_cover
+
+    default_cover.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=0x1f2937:s=960x540",
+        "-frames:v",
+        "1",
+        str(default_cover),
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0 or not default_cover.exists():
+        detail = (proc.stderr or b"").decode("utf-8", errors="ignore")[-240:]
+        raise HTTPException(status_code=500, detail=f"Failed to create default cover: {detail or 'ffmpeg failed'}")
+    return default_cover
+
+
+def _build_cover_for_work(work_dir: Path, video_file: Path | None) -> str:
+    cover_path = work_dir / "cover.jpg"
+    if cover_path.exists():
+        return media_url_from_work(work_dir.name, cover_path.name)
+
+    if video_file and video_file.exists():
+        cmd = [
+            "ffmpeg", "-y", "-i", str(video_file),
+            "-vf", "select=eq(pict_type\\,I)", "-frames:v", "1", str(cover_path),
+        ]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0 or not cover_path.exists():
+            cmd2 = ["ffmpeg", "-y", "-i", str(video_file), "-frames:v", "1", str(cover_path)]
+            subprocess.run(cmd2, capture_output=True)
+        if cover_path.exists():
+            return media_url_from_work(work_dir.name, cover_path.name)
+
+    default_cover = _ensure_default_cover()
+    shutil.copyfile(default_cover, cover_path)
+    return media_url_from_work(work_dir.name, cover_path.name)
+
+
+def _save_uploaded_cover(work_dir: Path, cover: UploadFile) -> str:
+    suffix = Path(cover.filename or "").suffix.lower()
+    raw_path = MEDIA_TMP_DIR / f"raw_cover_{work_dir.name}_{secrets.token_hex(4)}{suffix or '.img'}"
+    with raw_path.open("wb") as out:
+        while True:
+            chunk = cover.file.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+    cover.file.close()
+
+    final_cover = work_dir / "cover.jpg"
+    if suffix in {".jpg", ".jpeg"}:
+        shutil.move(str(raw_path), str(final_cover))
+    else:
+        cmd = ["ffmpeg", "-y", "-i", str(raw_path), "-frames:v", "1", str(final_cover)]
+        proc = subprocess.run(cmd, capture_output=True)
+        raw_path.unlink(missing_ok=True)
+        if proc.returncode != 0 or not final_cover.exists():
+            raise HTTPException(status_code=400, detail="Invalid cover image")
+
+    return media_url_from_work(work_dir.name, final_cover.name)
+
+
 def _resolve_work_media(work_key: str, prefer: str = "video") -> str:
     work_dir = MEDIA_WORK_SUBDIR / work_key
     if not work_dir.exists():
@@ -165,7 +253,7 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     file_index = collect_media_files()
     rows = conn.execute(
         """
-        SELECT id, title, video_url, audio_url, duration, size, updated_at
+        SELECT id, title, video_url, audio_url, cover_url, media_type, duration, size, updated_at
         FROM media_assets
         ORDER BY updated_at DESC
         """
@@ -187,6 +275,8 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "name": row["title"] or work_key,
                 "videoUrl": file_meta["videoUrl"],
                 "audioUrl": file_meta["audioUrl"] or row["audio_url"] or "",
+                "coverUrl": row["cover_url"] or media_url_from_work(work_key, "cover.jpg"),
+                "type": row["media_type"] or _guess_media_type(row["title"] or work_key),
                 "duration": row["duration"] or 0,
                 "size": file_meta["size"],
                 "updatedAt": file_meta["updatedAt"],
@@ -202,6 +292,8 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "name": stem,
                 "videoUrl": file_meta["videoUrl"],
                 "audioUrl": file_meta["audioUrl"],
+                "coverUrl": media_url_from_work(stem, "cover.jpg"),
+                "type": _guess_media_type(stem),
                 "duration": 0,
                 "size": file_meta["size"],
                 "updatedAt": file_meta["updatedAt"],
@@ -323,7 +415,14 @@ def probe_media(file_path: Path) -> dict[str, Any]:
 def extract_media_profile(probe_result: dict[str, Any]) -> dict[str, str]:
     fmt = (probe_result.get("format") or {}).get("format_name", "")
     streams = probe_result.get("streams") or []
-    v_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
+    v_stream = next(
+        (
+            s
+            for s in streams
+            if s.get("codec_type") == "video" and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+        ),
+        {},
+    )
     a_stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
     return {
         "container": (fmt.split(",")[0] if fmt else "unknown"),
@@ -354,7 +453,7 @@ def allocate_media_stem(original_stem: str) -> str:
         index += 1
 
 
-async def import_media_file(file: UploadFile) -> dict[str, Any]:
+async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile | None = None) -> dict[str, Any]:
     """导入本地视频/音频，输出 work/<title>/video|audio 资源并入库。"""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in (ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS):
@@ -393,7 +492,10 @@ async def import_media_file(file: UploadFile) -> dict[str, Any]:
     except (TypeError, ValueError):
         duration = 0.0
     streams = probe_result.get("streams") or []
-    has_video = any(s.get("codec_type") == "video" for s in streams)
+    has_video = any(
+        s.get("codec_type") == "video" and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+        for s in streams
+    )
     has_audio = any(s.get("codec_type") == "audio" for s in streams)
 
     video_name = "video.mp4"
@@ -404,6 +506,12 @@ async def import_media_file(file: UploadFile) -> dict[str, Any]:
     video_url = ""
     audio_url = ""
     transcoded = False
+
+    media_type = (media_type or "").strip()
+    if media_type not in MEDIA_TYPE_OPTIONS:
+        raw_path.unlink(missing_ok=True)
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise HTTPException(status_code=422, detail="Invalid media type")
 
     if has_video:
         if is_browser_friendly_mp4(profile):
@@ -473,25 +581,48 @@ async def import_media_file(file: UploadFile) -> dict[str, Any]:
 
     raw_path.unlink(missing_ok=True)
 
+    try:
+        cover_url = _save_uploaded_cover(work_dir, cover) if cover else _build_cover_for_work(work_dir, video_path if video_path.exists() else None)
+    except HTTPException:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+
     title = media_stem
     now_str = dt_to_str(now_utc())
     conn = db_conn()
     try:
-        conn.execute(
-            """
-            INSERT INTO media_assets(title, video_url, audio_url, duration, size, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                title,
-                video_url,
-                audio_url,
-                duration,
-                (video_path.stat().st_size if video_path.exists() else audio_path.stat().st_size),
-                now_str,
-                now_str,
-            ),
+        match = conn.execute(
+            "SELECT id FROM media_assets WHERE video_url LIKE ? OR audio_url LIKE ? ORDER BY updated_at DESC LIMIT 1",
+            (f"/media/work/{media_stem}/%", f"/media/work/{media_stem}/%"),
+        ).fetchone()
+        payload = (
+            title,
+            video_url,
+            audio_url,
+            cover_url,
+            media_type,
+            duration,
+            (video_path.stat().st_size if video_path.exists() else audio_path.stat().st_size),
+            now_str,
+            now_str,
         )
+        if match:
+            conn.execute(
+                """
+                UPDATE media_assets
+                SET title = ?, video_url = ?, audio_url = ?, cover_url = ?, media_type = ?, duration = ?, size = ?, created_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (*payload, match["id"]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                payload,
+            )
         conn.commit()
     finally:
         conn.close()
@@ -500,6 +631,8 @@ async def import_media_file(file: UploadFile) -> dict[str, Any]:
         "ok": True,
         "videoUrl": video_url,
         "audioUrl": audio_url,
+        "coverUrl": cover_url,
+        "type": media_type,
         "profile": profile,
         "transcoded": transcoded,
         "imported": True,
@@ -552,7 +685,7 @@ def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
         if created:
             moved_dirs += 1
 
-    rows = conn.execute("SELECT id, video_url, audio_url FROM media_assets").fetchall()
+    rows = conn.execute("SELECT id, title, video_url, audio_url, cover_url, media_type FROM media_assets").fetchall()
     for row in rows:
         stem = stem_from_media_url(row["video_url"] or row["audio_url"] or "")
         if not stem:
@@ -563,17 +696,42 @@ def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
             continue
         video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
         audio_file = _find_first_media_file(work_dir, ALLOWED_AUDIO_EXTENSIONS, "audio")
-        if not video_file:
+        if not video_file and not audio_file:
             continue
         conn.execute(
-            "UPDATE media_assets SET video_url = ?, audio_url = ?, updated_at = ? WHERE id = ?",
+            "UPDATE media_assets SET video_url = ?, audio_url = ?, cover_url = ?, media_type = ?, updated_at = ? WHERE id = ?",
             (
-                media_url_from_work(work_key, video_file.name),
+                media_url_from_work(work_key, video_file.name) if video_file else "",
                 media_url_from_work(work_key, audio_file.name) if audio_file else "",
+                (row["cover_url"] or media_url_from_work(work_key, "cover.jpg")),
+                (row["media_type"] or _guess_media_type(row["title"] or work_key)),
                 dt_to_str(now_utc()),
                 row["id"],
             ),
         )
+
+        cover_file = work_dir / "cover.jpg"
+        if not cover_file.exists():
+            try:
+                _build_cover_for_work(work_dir, video_file)
+            except HTTPException:
+                pass
+    conn.commit()
+
+    # Deduplicate rows that point to the same work folder (keep newest update).
+    rows2 = conn.execute("SELECT id, video_url, audio_url, updated_at FROM media_assets").fetchall()
+    by_work: dict[str, list[sqlite3.Row]] = {}
+    for row in rows2:
+        work = stem_from_media_url(row["video_url"] or row["audio_url"] or "")
+        if not work:
+            continue
+        by_work.setdefault(work, []).append(row)
+    for _work, entries in by_work.items():
+        if len(entries) < 2:
+            continue
+        ordered = sorted(entries, key=lambda r: str(r["updated_at"] or ""), reverse=True)
+        for dup in ordered[1:]:
+            conn.execute("DELETE FROM media_assets WHERE id = ?", (dup["id"],))
     conn.commit()
 
     return {"movedDirs": moved_dirs, "movedFiles": moved_files}

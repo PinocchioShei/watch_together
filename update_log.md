@@ -264,3 +264,36 @@
 - Synced user room import UI with new media rules: upload chooser now accepts audio formats and import copy updated to `media/work/<work>/` layout.
 - Updated user-side import status text to differentiate `audio-only` vs `video/audio` imports.
 - Bumped main frontend cache versions (`styles.css?v=20260321d`, `app.js?v=20260321r`).
+
+## 2026-03-21 23:05
+- Added `cover_url` and `media_type` support in media assets; import APIs (admin + user) now require `media_type` and accept optional `cover` upload.
+- Cover generation rules implemented: uploaded cover -> `cover.jpg`; else video first keyframe; audio-only fallback uses `media/default_cover.jpg`.
+- Added audio-only import capability with DB records as `videoUrl=''` and valid `audioUrl`.
+- Updated admin/user import forms with required type selector (`movie/RJ/ASMR/music/shot`) and optional cover file input.
+- Admin media table now includes `Type` column and keeps color-highlighted video/audio availability states.
+
+## 2026-03-21 23:14
+- Refined import form UX (admin + user): media file and cover file inputs now appear in one row with explicit labels, plus clear accepted-format hint text.
+- Updated cache versions for new import layout (`styles.css?v=20260321g`, `app.js?v=20260321u`, `admin.css?v=20260321j`, `admin.js?v=20260321n`).
+
+## 2026-03-21 23:18
+- Fixed admin import form layout parity: added admin-side `.import-file-row`/`.import-field` styles so media+cover inputs render in one row on desktop.
+- Bumped admin stylesheet cache version (`admin.css?v=20260321k`).
+
+## 2026-03-21 23:27
+- Fixed media asset duplicate-row issue for same work folder: imports now upsert existing DB record by `/media/work/<work>/...` match instead of always inserting.
+- Added startup dedup cleanup in media migration to collapse historical duplicate rows that point to the same work folder (keeps latest update).
+
+## 2026-03-21 23:35
+- Added compatibility fallback for import endpoints: `media_type` now defaults to `movie` if old cached frontend submits upload without type field, preventing 500/422 failures during rollout.
+
+## 2026-03-22 16:00
+- Finalized audio-import stream detection fix: ffprobe parsing now ignores `attached_pic` video streams, so MP3/audio files with embedded album art are treated as audio-only imports instead of failing video path selection.
+- Hardened cover fallback behavior in import pipeline: when no custom cover is provided and no video frame can be extracted, backend now auto-creates `media/default_cover.jpg` (if missing) via ffmpeg and copies it to work `cover.jpg`.
+- Added import failure cleanup guard: if cover generation/saving fails after transcoding, the partially created `media/work/<work>/` folder is removed to avoid broken half-import artifacts.
+- Verified both endpoints with real uploads on running services (`8090` user API and `8091` admin API): audio-only no-cover, audio+cover, and video no-cover all returned success and wrote valid `audioUrl/videoUrl/coverUrl` plus DB `media_type`/`cover_url`.
+
+## 2026-03-22 16:21
+- Cleaned verification artifacts from previous matrix tests: removed `case_*` work folders under `media/work/` and deleted corresponding `media_assets` rows.
+- Improved import error UX for both user and admin panels: added scenario-based error message mapping (invalid type/format, oversize, ffprobe parse failure, no streams, invalid cover, ffmpeg/transcode failure) while preserving backend detail for debugging-sensitive failures.
+- Bumped static cache/build versions to force frontend refresh on both pages (`index`: `styles/app=20260322a`, footer build label `20260322a`; `admin`: `admin.css/js=20260322a`).

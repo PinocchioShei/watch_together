@@ -83,6 +83,20 @@ body.login-mode .header {
   margin-bottom: 10px;
 }
 
+.import-file-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.import-field {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 input,
 button {
   width: 100%;
@@ -133,18 +147,20 @@ th, td {
 .users-table td:nth-child(3) { width: 40%; }
 
 .media-table th:nth-child(1),
-.media-table td:nth-child(1) { width: 25%; }
+.media-table td:nth-child(1) { width: 22%; }
 
 .media-table th:nth-child(2),
 .media-table td:nth-child(2),
 .media-table th:nth-child(3),
-.media-table td:nth-child(3) { width: 12%; }
-
+.media-table td:nth-child(3),
 .media-table th:nth-child(4),
-.media-table td:nth-child(4) { width: 12%; }
+.media-table td:nth-child(4) { width: 10%; }
 
 .media-table th:nth-child(5),
-.media-table td:nth-child(5) { width: 14%; }
+.media-table td:nth-child(5) { width: 10%; }
+
+.media-table th:nth-child(6),
+.media-table td:nth-child(6) { width: 26%; }
 
 .state-badge {
   display: inline-block;
@@ -191,4 +207,5 @@ th { color: var(--muted); }
     align-content: start;
     padding-top: 40px;
   }
+  .import-file-row { grid-template-columns: 1fr; }
 }

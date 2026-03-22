@@ -97,6 +97,8 @@ def init_db() -> None:
             title TEXT NOT NULL,
             video_url TEXT NOT NULL UNIQUE,
             audio_url TEXT,
+            cover_url TEXT,
+            media_type TEXT,
             duration REAL NOT NULL DEFAULT 0,
             size INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
@@ -122,6 +124,39 @@ def init_db() -> None:
         conn.execute("ALTER TABLE rooms ADD COLUMN password_salt TEXT")
     if "password_hash" not in room_columns:
         conn.execute("ALTER TABLE rooms ADD COLUMN password_hash TEXT")
+
+    media_columns = {row[1] for row in conn.execute("PRAGMA table_info(media_assets)").fetchall()}
+    if "cover_url" not in media_columns:
+        conn.execute("ALTER TABLE media_assets ADD COLUMN cover_url TEXT")
+    if "media_type" not in media_columns:
+        conn.execute("ALTER TABLE media_assets ADD COLUMN media_type TEXT")
+
+    media_table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='media_assets'").fetchone()
+    media_sql_text = (media_table_sql[0] or "") if media_table_sql else ""
+    if "video_url TEXT NOT NULL UNIQUE" in media_sql_text:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS media_assets_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                video_url TEXT NOT NULL DEFAULT '',
+                audio_url TEXT,
+                cover_url TEXT,
+                media_type TEXT,
+                duration REAL NOT NULL DEFAULT 0,
+                size INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            INSERT INTO media_assets_v2(id, title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
+            SELECT id, title, COALESCE(video_url, ''), audio_url, cover_url, media_type, duration, size, created_at, updated_at
+            FROM media_assets;
+
+            DROP TABLE media_assets;
+            ALTER TABLE media_assets_v2 RENAME TO media_assets;
+            """
+        )
 
     member_columns = {row[1] for row in conn.execute("PRAGMA table_info(room_members)").fetchall()}
     if "room_password_cache" not in member_columns:

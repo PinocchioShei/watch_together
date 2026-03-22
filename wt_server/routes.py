@@ -342,8 +342,13 @@ def create_app() -> FastAPI:
         return {"ok": True, "roomId": room_id}
 
     @app.post("/api/admin/import")
-    async def admin_import(file: UploadFile = File(...), _: str = Depends(require_admin)):
-        return await import_media_file(file)
+    async def admin_import(
+        file: UploadFile = File(...),
+        media_type: str = File("movie"),
+        cover: UploadFile | None = File(default=None),
+        _: str = Depends(require_admin),
+    ):
+        return await import_media_file(file, media_type, cover)
 
     @app.post("/api/register")
     def register(payload: RegisterPayload):
@@ -638,9 +643,14 @@ def create_app() -> FastAPI:
         return {"ok": True, "roomDeleted": deleted}
 
     @app.post("/api/upload-video")
-    async def upload_video(file: UploadFile = File(...), user: User = Depends(require_user)):
+    async def upload_video(
+        file: UploadFile = File(...),
+        media_type: str = File("movie"),
+        cover: UploadFile | None = File(default=None),
+        user: User = Depends(require_user),
+    ):
         del user
-        return await import_media_file(file)
+        return await import_media_file(file, media_type, cover)
 
     @app.websocket("/ws/rooms/{room_id}")
     async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):

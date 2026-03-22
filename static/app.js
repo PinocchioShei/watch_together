@@ -60,6 +60,8 @@ const mediaList = document.getElementById("mediaList");
 const mediaStatus = document.getElementById("mediaStatus");
 const importForm = document.getElementById("importForm");
 const videoFileInput = document.getElementById("videoFileInput");
+const importTypeSelect = document.getElementById("importTypeSelect");
+const coverFileInput = document.getElementById("coverFileInput");
 const statusBar = document.getElementById("statusBar");
 const onlineCount = document.getElementById("onlineCount");
 const memberList = document.getElementById("memberList");
@@ -89,6 +91,37 @@ function setLobbyStatus(msg, isError = false) {
 function setMediaStatus(msg, isError = false) {
   mediaStatus.textContent = msg || "";
   mediaStatus.style.color = isError ? "#fca5a5" : "#94a3b8";
+}
+
+function formatImportError(detail) {
+  const raw = String(detail || "").trim();
+  const msg = raw || "Request failed";
+  const lower = msg.toLowerCase();
+  if (lower.includes("invalid media type")) {
+    return "Import failed: invalid type. Choose movie/RJ/ASMR/music/shot.";
+  }
+  if (lower.includes("only supported video/audio formats")) {
+    return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a.";
+  }
+  if (lower.includes("file too large")) {
+    return "Import failed: file too large (max 1GB).";
+  }
+  if (lower.includes("cannot parse uploaded media") || lower.includes("invalid media metadata")) {
+    return `Import failed: cannot parse media file. ${msg}`;
+  }
+  if (lower.includes("uploaded file has no audio or video stream")) {
+    return "Import failed: file has no playable audio/video stream.";
+  }
+  if (lower.includes("invalid cover image")) {
+    return "Import failed: cover image is invalid. Use jpg/png.";
+  }
+  if (lower.includes("default cover") || lower.includes("failed to create default cover")) {
+    return `Import failed: server cover fallback error. ${msg}`;
+  }
+  if (lower.includes("transcode failed") || lower.includes("audio import failed")) {
+    return `Import failed during ffmpeg processing. ${msg}`;
+  }
+  return `Import failed: ${msg}`;
 }
 
 function renderMembers(payload) {
@@ -652,12 +685,21 @@ importForm.onsubmit = async (e) => {
     setMediaStatus("Choose a local media file first.", true);
     return;
   }
+  if (!importTypeSelect.value) {
+    setMediaStatus("Choose media type first.", true);
+    return;
+  }
   try {
     setMediaStatus("Importing media into library...");
     const fd = new FormData();
     fd.append("file", videoFileInput.files[0]);
+    fd.append("media_type", importTypeSelect.value);
+    if (coverFileInput.files && coverFileInput.files[0]) {
+      fd.append("cover", coverFileInput.files[0]);
+    }
     const upload = await api("/api/upload-video", { method: "POST", body: fd });
     videoFileInput.value = "";
+    coverFileInput.value = "";
     const profile = upload.profile || {};
     const modeText = upload.videoUrl ? "video/audio" : "audio-only";
     const transcodeText = upload.transcoded ? "transcoded" : "direct import";
@@ -666,7 +708,7 @@ importForm.onsubmit = async (e) => {
     );
     await loadMediaLibrary();
   } catch (err) {
-    setMediaStatus(`Import failed: ${err.message}`, true);
+    setMediaStatus(formatImportError(err?.message), true);
   }
 };
 

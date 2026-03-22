@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Admin</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260321h" />
+    <link rel="stylesheet" href="/static/admin.css?v=20260322a" />
   </head>
   <body>
     <div class="shell">
@@ -52,7 +52,23 @@
           <article class="card">
             <div class="title-row"><h3>Media Management</h3><button id="refreshMedia">Refresh</button></div>
             <form id="importForm" class="inline-form">
-              <input id="importFile" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" required />
+              <div class="import-file-row">
+                <label class="import-field">Media file (video/audio)
+                  <input id="importFile" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" required />
+                </label>
+                <label class="import-field">Cover image (optional)
+                  <input id="importCover" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
+                </label>
+              </div>
+              <select id="importType" required>
+                <option value="">Select type</option>
+                <option value="movie">movie</option>
+                <option value="RJ">RJ</option>
+                <option value="ASMR">ASMR</option>
+                <option value="music">music</option>
+                <option value="shot">shot</option>
+              </select>
+              <p class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
               <button type="submit">Import Video/Audio</button>
             </form>
             <p id="importMsg" class="msg"></p>
@@ -67,6 +83,6 @@
       </main>
     </div>
 
-    <script type="module" src="/static/admin.js?v=20260321k" defer></script>
+    <script type="module" src="/static/admin.js?v=20260322a" defer></script>
   </body>
   </html>

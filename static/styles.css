@@ -111,7 +111,18 @@ label {
   font-size: 14px;
 }
 
+.import-file-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.import-field {
+  margin: 0;
+}
+
 input,
+select,
 button,
 video {
   width: 100%;
@@ -120,6 +131,7 @@ video {
 }
 
 input,
+select,
 button {
   padding: 10px 12px;
   background: #0b1220;
@@ -431,6 +443,10 @@ video {
 
   .mode-switch button {
     min-width: 0;
+  }
+
+  .import-file-row {
+    grid-template-columns: 1fr;
   }
 
   .audio-panel {
