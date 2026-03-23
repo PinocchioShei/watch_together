@@ -297,3 +297,24 @@
 - Cleaned verification artifacts from previous matrix tests: removed `case_*` work folders under `media/work/` and deleted corresponding `media_assets` rows.
 - Improved import error UX for both user and admin panels: added scenario-based error message mapping (invalid type/format, oversize, ffprobe parse failure, no streams, invalid cover, ffmpeg/transcode failure) while preserving backend detail for debugging-sensitive failures.
 - Bumped static cache/build versions to force frontend refresh on both pages (`index`: `styles/app=20260322a`, footer build label `20260322a`; `admin`: `admin.css/js=20260322a`).
+
+## 2026-03-22 16:41
+- Redesigned room media list UI from plain text rows to cover cards: each media item now renders as a 16:9 cover image card with one item per row.
+- Added hover interaction for cover cards: image area applies Gaussian blur and an eye-catching centered work title overlay appears on hover.
+- Added compact metadata row under each cover card (size + AV/V marker) and preserved active-item highlight/playability behavior.
+- Bumped main frontend cache/build version for rollout (`styles.css/app.js` and footer build label -> `20260322b`).
+
+## 2026-03-22 22:09
+- Investigated domain access failure for `direct.hoshinase.xyz`: root cause was DDNS updater selecting external probe result that returned a non-local tunnel IPv6 (`2407:cdc0:800c::78`) instead of host preferred global IPv6.
+- Patched `tools/ddns_cf_ipv6.ps1` IPv6 selection priority: now first picks local `Preferred` global IPv6 from active interfaces (excluding loopback/link-local/ULA), then falls back to external probe endpoints.
+- Re-ran DDNS update and verified Cloudflare AAAA updated to current host IPv6 (`240c:c603:c:2e79:b12e:e608:3838:cbd2`) in API.
+- Verified domain connectivity with IPv6 HTTP request to service endpoint (`direct.hoshinase.xyz:8090`) returning `200 OK` and latest frontend build.
+
+## 2026-03-23 08:27
+- Investigated frequent large-file import failures from external/mobile network. Root cause on frontend request layer: upload calls were using a 12s abort timeout and generic retry wrapper, which is too short for unstable uplink and caused `Network unstable, please retry` before server-side import completed.
+- Updated `static/js/app/api-client.js` for upload endpoints (`/api/upload-video`, `/api/admin/import`):
+  - upload timeout increased to 15 minutes;
+  - upload retries disabled (`maxAttempts=1`) to avoid duplicate large-body re-send;
+  - explicit upload-timeout error message returned for better user guidance.
+- Updated user/admin import error mapping to show clearer upload-timeout hint (`stable network / prefer Wi-Fi`) instead of generic network-failed wording.
+- Bumped frontend cache versions for both pages (`index` build `20260322e`, `app.js/admin.js` query version `20260322e`).

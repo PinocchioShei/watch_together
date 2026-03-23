@@ -19,6 +19,22 @@ $ttl = if ($cfg.ttl) { [int]$cfg.ttl } else { 120 }
 $proxied = if ($null -ne $cfg.proxied) { [bool]$cfg.proxied } else { $false }
 
 function Get-PublicIPv6 {
+    $localPreferred = Get-NetIPAddress -AddressFamily IPv6 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.IPAddress -notlike "fe80:*" -and
+            $_.IPAddress -notlike "fc*" -and
+            $_.IPAddress -notlike "fd*" -and
+            $_.AddressState -eq "Preferred" -and
+            $_.ValidLifetime -gt 0 -and
+            $_.InterfaceAlias -ne "Loopback Pseudo-Interface 1"
+        } |
+        Sort-Object -Property ValidLifetime -Descending |
+        Select-Object -First 1
+
+    if ($localPreferred) {
+        return $localPreferred.IPAddress
+    }
+
     $candidates = @(
         "https://api64.ipify.org",
         "https://v6.ident.me",
@@ -42,6 +58,7 @@ function Get-PublicIPv6 {
             $_.IPAddress -notlike "fe80:*" -and
             $_.IPAddress -notlike "fc*" -and
             $_.IPAddress -notlike "fd*" -and
+            $_.InterfaceAlias -ne "Loopback Pseudo-Interface 1" -and
             $_.ValidLifetime -gt 0
         } |
         Select-Object -First 1

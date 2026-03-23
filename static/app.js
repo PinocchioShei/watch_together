@@ -1,4 +1,4 @@
-import { formatBytes, normalizeUrl, toMediaPath } from "./js/shared/format.js";
+import { normalizeUrl, toMediaPath } from "./js/shared/format.js";
 import { clearRoomSession, createTabLock, readRoomSession, saveRoomSession } from "./js/app/session.js";
 import { createApiClient } from "./js/app/api-client.js";
 import { createAuthModule } from "./js/app/auth-module.js";
@@ -105,6 +105,9 @@ function formatImportError(detail) {
   }
   if (lower.includes("file too large")) {
     return "Import failed: file too large (max 1GB).";
+  }
+  if (lower.includes("upload timed out") || lower.includes("network unstable")) {
+    return "Import failed: upload connection timed out. Large files need a stable network (prefer Wi-Fi).";
   }
   if (lower.includes("cannot parse uploaded media") || lower.includes("invalid media metadata")) {
     return `Import failed: cannot parse media file. ${msg}`;
@@ -250,7 +253,10 @@ function renderMediaLibrary() {
   }
   state.mediaLibrary.forEach((item) => {
     const li = document.createElement("li");
+    li.className = "media-item";
     const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "media-card";
     const modeUrl = resolveMediaUrlForMode(item, state.playMode);
     const playable = !!modeUrl;
     if (
@@ -259,8 +265,37 @@ function renderMediaLibrary() {
     ) {
       btn.classList.add("active");
     }
-    const mediaType = item.audioUrl ? "AV" : "V";
-    btn.textContent = `${item.name}  |  ${formatBytes(item.size)}  |  ${mediaType}`;
+    const coverWrap = document.createElement("div");
+    coverWrap.className = "media-cover-wrap";
+
+    if (item.coverUrl) {
+      const img = document.createElement("img");
+      img.className = "media-cover-img";
+      img.src = item.coverUrl;
+      img.alt = item.name || "cover";
+      img.loading = "lazy";
+      coverWrap.appendChild(img);
+    } else {
+      const fallback = document.createElement("div");
+      fallback.className = "media-cover-fallback";
+      fallback.textContent = "No Cover";
+      coverWrap.appendChild(fallback);
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "media-cover-overlay";
+    const title = document.createElement("div");
+    title.className = "media-cover-title";
+    title.textContent = item.name || "Untitled";
+    overlay.appendChild(title);
+    coverWrap.appendChild(overlay);
+    btn.appendChild(coverWrap);
+
+    const nameLine = document.createElement("div");
+    nameLine.className = "media-name-line";
+    nameLine.textContent = item.name || "Untitled";
+    btn.appendChild(nameLine);
+
     if (!playable) {
       btn.disabled = true;
       btn.title = state.playMode === "audio" ? "No audio track for this item" : "No video track";

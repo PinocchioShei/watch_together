@@ -43,6 +43,9 @@ function formatImportError(detail) {
   if (lower.includes("file too large")) {
     return "Import failed: file too large (max 1GB).";
   }
+  if (lower.includes("upload timed out") || lower.includes("network unstable")) {
+    return "Import failed: upload connection timed out. Large files need a stable network (prefer Wi-Fi).";
+  }
   if (lower.includes("cannot parse uploaded media") || lower.includes("invalid media metadata")) {
     return `Import failed: cannot parse media file. ${msg}`;
   }

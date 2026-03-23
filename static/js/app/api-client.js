@@ -10,13 +10,14 @@ export function createApiClient(ctx) {
     showTab,
   } = ctx;
 
-  async function doFetchWithRetry(path, requestOptions) {
-    const maxAttempts = 3;
+  async function doFetchWithRetry(path, requestOptions, fetchOptions = {}) {
+    const maxAttempts = Math.max(1, Number(fetchOptions.maxAttempts || 1));
+    const timeoutMs = Math.max(1000, Number(fetchOptions.timeoutMs || 12000));
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const res = await fetch(path, { ...requestOptions, signal: controller.signal });
         clearTimeout(timeoutId);
@@ -39,6 +40,9 @@ export function createApiClient(ctx) {
     const hasBody = Object.prototype.hasOwnProperty.call(options, "body");
     const isFormData = hasBody && options.body instanceof FormData;
     const authHeader = state.token ? { Authorization: `Bearer ${state.token}` } : {};
+    const isUploadPath = /\/api\/(upload-video|admin\/import)$/.test(path);
+    const timeoutMs = isFormData && isUploadPath ? 15 * 60 * 1000 : 12000;
+    const maxAttempts = isFormData ? 1 : 3;
     let res;
     try {
       res = await doFetchWithRetry(path, {
@@ -51,9 +55,15 @@ export function createApiClient(ctx) {
               ...(options.headers || {}),
             },
         credentials: "include",
+      }, {
+        timeoutMs,
+        maxAttempts,
       });
     } catch (err) {
       const msg = String(err?.message || "");
+      if (String(err?.name || "") === "AbortError" && isFormData && isUploadPath) {
+        throw new Error("Upload timed out. Network is too slow for this file, please retry on stable Wi-Fi.");
+      }
       if (/database is locked|server busy/i.test(msg)) {
         throw new Error("Server busy, retry in a moment.");
       }
