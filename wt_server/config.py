@@ -8,6 +8,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "watch_together.db"
 STATIC_DIR = BASE_DIR / "static"
+RESOURCE_DIR = BASE_DIR / "resource"
 
 MEDIA_DIR = BASE_DIR / "media"
 MEDIA_WORK_DIR = MEDIA_DIR

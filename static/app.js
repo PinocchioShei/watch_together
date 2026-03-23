@@ -81,6 +81,7 @@ let chatModule = null;
 let loadRooms = async () => [];
 let tryRestoreRoom = async () => {};
 let importInFlight = false;
+let guestAuthOpen = false;
 
 window.addEventListener("beforeunload", stopTabLock);
 
@@ -452,6 +453,8 @@ function setAuthMode(loggedIn) {
   appPanel.classList.toggle("hidden", !loggedIn);
   page.classList.toggle("auth-only", !loggedIn);
   if (loggedIn && state.me) {
+    page.classList.remove("guest-mode", "guest-idle", "guest-auth-open");
+    authPanel.classList.remove("auth-collapsed");
     userBadge.classList.remove("hidden");
     logoutBtn.classList.remove("hidden");
     userBadge.textContent = `User: ${state.me.username}`;
@@ -462,12 +465,41 @@ function setAuthMode(loggedIn) {
     stopTabLock();
     userBadge.classList.add("hidden");
     logoutBtn.classList.add("hidden");
+    guestAuthOpen = false;
+    authPanel.classList.remove("hidden");
+    authPanel.classList.add("auth-collapsed");
+    page.classList.add("guest-mode", "guest-idle");
+    page.classList.remove("guest-auth-open");
+    page.classList.remove("in-room");
   }
 }
+
+function toggleGuestAuth(open) {
+  if (state.token) return;
+  guestAuthOpen = !!open;
+  authPanel.classList.toggle("auth-collapsed", !guestAuthOpen);
+  page.classList.toggle("guest-auth-open", guestAuthOpen);
+  page.classList.toggle("guest-idle", !guestAuthOpen);
+  if (guestAuthOpen) {
+    const firstInput = loginForm?.querySelector("input");
+    if (firstInput) setTimeout(() => firstInput.focus(), 180);
+  }
+}
+
+document.addEventListener("click", (ev) => {
+  if (state.token) return;
+  if (!page.classList.contains("guest-mode")) return;
+  const target = ev.target;
+  if (!(target instanceof Element)) return;
+  if (authPanel.contains(target)) return;
+  if (target.closest("button,input,select,textarea,label,form,a")) return;
+  toggleGuestAuth(!guestAuthOpen);
+});
 
 function enterLobbyView(clearSavedRoom = true) {
   lobbyPanel.classList.remove("hidden");
   roomPanel.classList.add("hidden");
+  page.classList.remove("in-room");
   state.roomId = null;
   state.controllerUserId = null;
   state.roomDisplayNo = null;
@@ -497,6 +529,7 @@ function enterLobbyView(clearSavedRoom = true) {
 function enterRoomView(roomName, roomId, displayNo) {
   lobbyPanel.classList.add("hidden");
   roomPanel.classList.remove("hidden");
+  page.classList.add("in-room");
   state.roomDisplayNo = displayNo;
   currentRoomTitle.textContent = `Room #${displayNo}: ${roomName}`;
 }

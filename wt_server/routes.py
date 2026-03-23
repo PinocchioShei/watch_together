@@ -18,7 +18,7 @@ from .auth import (
     require_user,
     verify_password,
 )
-from .config import ADMIN_PASSWORD, ADMIN_USERNAME, MEDIA_DIR, STATIC_DIR
+from .config import ADMIN_PASSWORD, ADMIN_USERNAME, MEDIA_DIR, RESOURCE_DIR, STATIC_DIR
 from .media import (
     collect_media_files,
     import_media_file,
@@ -104,6 +104,8 @@ def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+    if RESOURCE_DIR.exists():
+        app.mount("/resource", StaticFiles(directory=str(RESOURCE_DIR)), name="resource")
 
     async def build_room_members_payload(room_id: int) -> dict:
         online_ids = await hub.room_user_ids(room_id)

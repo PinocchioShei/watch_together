@@ -3,6 +3,7 @@ import { escapeHtml, formatBytes } from "./js/admin/helpers.js";
 const state = {
   token: sessionStorage.getItem("wt_admin_token") || "",
 };
+let guestAuthOpen = false;
 
 const loginCard = document.getElementById("loginCard");
 const dashboard = document.getElementById("dashboard");
@@ -126,7 +127,40 @@ function setAuthUI(ok) {
   dashboard.classList.toggle("hidden", !ok);
   logoutBtn.classList.toggle("hidden", !ok);
   document.body.classList.toggle("login-mode", !ok);
+  if (ok) {
+    guestAuthOpen = false;
+    loginCard.classList.remove("auth-collapsed");
+    document.body.classList.remove("guest-mode", "guest-idle", "guest-auth-open");
+  } else {
+    guestAuthOpen = false;
+    loginCard.classList.remove("hidden");
+    loginCard.classList.add("auth-collapsed");
+    document.body.classList.add("guest-mode", "guest-idle");
+    document.body.classList.remove("guest-auth-open");
+  }
 }
+
+function toggleGuestAuth(open) {
+  if (state.token) return;
+  guestAuthOpen = !!open;
+  loginCard.classList.toggle("auth-collapsed", !guestAuthOpen);
+  document.body.classList.toggle("guest-auth-open", guestAuthOpen);
+  document.body.classList.toggle("guest-idle", !guestAuthOpen);
+  if (guestAuthOpen) {
+    const firstInput = loginForm?.querySelector("input");
+    if (firstInput) setTimeout(() => firstInput.focus(), 180);
+  }
+}
+
+document.addEventListener("click", (ev) => {
+  if (state.token) return;
+  if (!document.body.classList.contains("guest-mode")) return;
+  const target = ev.target;
+  if (!(target instanceof Element)) return;
+  if (loginCard.contains(target)) return;
+  if (target.closest("button,input,select,textarea,label,form,a")) return;
+  toggleGuestAuth(!guestAuthOpen);
+});
 
 function setActiveTab(tabName) {
   const target = tabPanels[tabName] ? tabName : "users";

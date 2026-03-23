@@ -1,13 +1,13 @@
 :root {
-  --bg: #0f172a;
-  --panel: #111827;
-  --panel-soft: #1f2937;
-  --text: #e5e7eb;
-  --muted: #94a3b8;
-  --accent: #22c55e;
-  --accent-soft: #14532d;
-  --danger: #ef4444;
-  --border: #334155;
+  --bg: #ffe4f2;
+  --panel: rgba(255, 245, 251, 0.72);
+  --panel-soft: rgba(255, 235, 246, 0.75);
+  --text: #4a2044;
+  --muted: #8f5b84;
+  --accent: #ef5da8;
+  --accent-soft: rgba(239, 93, 168, 0.24);
+  --danger: #db2777;
+  --border: rgba(219, 118, 173, 0.52);
 }
 
 * {
@@ -18,21 +18,25 @@ body {
   margin: 0;
   color: var(--text);
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: radial-gradient(circle at 10% 10%, #1e293b, #0b1220 60%);
+  background: url("/resource/day.jpg") center center / cover no-repeat fixed;
 }
 
 .page {
   max-width: 1760px;
   margin: 0 auto;
   padding: 20px;
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
 }
 
 .app-footer {
   margin-top: 14px;
-  text-align: right;
-  color: #64748b;
+  text-align: center;
+  color: #9b6a91;
   font-size: 12px;
   letter-spacing: 0.3px;
+  align-self: end;
 }
 
 .page.auth-only .layout {
@@ -42,11 +46,75 @@ body {
   justify-content: center;
 }
 
+.page.guest-mode {
+  min-height: 100vh;
+  position: relative;
+}
+
+.page.guest-mode::before {
+  content: "Watch Together";
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 50%;
+  text-align: center;
+  transform: translateY(calc(-50% + 22px));
+  font-size: clamp(44px, 8vw, 108px);
+  letter-spacing: 0.14em;
+  color: rgba(255, 251, 254, 0.98);
+  text-shadow:
+    0 16px 44px rgba(46, 13, 35, 0.68),
+    0 6px 18px rgba(88, 24, 65, 0.55),
+    0 0 3px rgba(255, 255, 255, 0.95);
+  opacity: 0;
+  transition: opacity 0.9s ease, transform 0.9s ease, filter 0.9s ease;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.page.guest-idle::before {
+  opacity: 1;
+  transform: translateY(-50%);
+}
+
+.page.guest-mode::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  backdrop-filter: blur(0px);
+  background: rgba(255, 255, 255, 0);
+  transition: backdrop-filter 0.6s ease, background 0.6s ease;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.page.guest-auth-open::before {
+  opacity: 0;
+  transform: translateY(calc(-50% - 12px));
+}
+
+.page.guest-auth-open::after {
+  backdrop-filter: blur(8px);
+  background: rgba(255, 235, 246, 0.16);
+}
+
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16px;
+}
+
+.page.guest-mode .topbar {
+  justify-content: center;
+  min-height: 66px;
+  margin-bottom: 8px;
+}
+
+.page.guest-mode .topbar-right,
+.page.guest-mode .topbar h1 {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .topbar-right {
@@ -69,11 +137,12 @@ p {
 }
 
 .card {
-  background: linear-gradient(145deg, #111827, #0b1220);
+  background: linear-gradient(145deg, rgba(255, 248, 252, 0.76), rgba(255, 240, 248, 0.66));
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 16px;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+  box-shadow: 0 12px 28px rgba(175, 64, 123, 0.22);
+  backdrop-filter: blur(8px);
 }
 
 .auth-card {
@@ -81,6 +150,18 @@ p {
   max-width: 760px;
   margin: 0 auto;
   padding: 26px;
+}
+
+.auth-card.auth-collapsed {
+  opacity: 0;
+  transform: translateY(22px) scale(0.985);
+  pointer-events: none;
+}
+
+.auth-card {
+  transition: opacity 0.45s ease, transform 0.45s ease;
+  position: relative;
+  z-index: 7;
 }
 
 .tabs {
@@ -134,12 +215,12 @@ input,
 select,
 button {
   padding: 10px 12px;
-  background: #0b1220;
+  background: rgba(255, 255, 255, 0.68);
   color: var(--text);
 }
 
 button {
-  background: #1e293b;
+  background: linear-gradient(120deg, rgba(251, 113, 186, 0.25), rgba(244, 114, 182, 0.16));
   cursor: pointer;
   transition: 0.15s ease;
 }
@@ -166,6 +247,12 @@ button.danger:hover {
 #appPanel {
   display: grid;
   gap: 16px;
+  min-height: 0;
+}
+
+.page:not(.in-room) #appPanel {
+  align-content: center;
+  justify-items: center;
 }
 
 #lobbyPanel {
@@ -175,7 +262,7 @@ button.danger:hover {
 
 .lobby-import-block {
   margin-top: 14px;
-  border-top: 1px solid rgba(51, 65, 85, 0.75);
+  border-top: 1px solid rgba(219, 118, 173, 0.6);
   padding-top: 12px;
 }
 
@@ -261,14 +348,14 @@ button.danger:hover {
 
 .media-filter-row label {
   font-size: 12px;
-  color: #94a3b8;
+  color: #9b6a91;
 }
 
 .media-filter-row select {
   border-radius: 9px;
-  border: 1px solid #334155;
-  background: #0b1220;
-  color: #dbeafe;
+  border: 1px solid rgba(219, 118, 173, 0.56);
+  background: rgba(255, 255, 255, 0.72);
+  color: #6f3f68;
   padding: 7px 9px;
 }
 
@@ -295,22 +382,22 @@ button.danger:hover {
 .media-list button.media-card {
   text-align: left;
   padding: 0;
-  background: #0b1220;
-  border: 1px solid #253349;
+  background: rgba(255, 248, 252, 0.78);
+  border: 1px solid rgba(220, 131, 181, 0.55);
   overflow: hidden;
 }
 
 .media-list .media-card.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35) inset;
+  box-shadow: 0 0 0 1px rgba(239, 93, 168, 0.35) inset;
 }
 
 .media-cover-wrap {
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
-  background: #0f172a;
-  border-bottom: 1px solid #253349;
+  background: #ffd8ec;
+  border-bottom: 1px solid rgba(220, 131, 181, 0.5);
 }
 
 .media-cover-img,
@@ -325,10 +412,10 @@ button.danger:hover {
 .media-cover-fallback {
   display: grid;
   place-items: center;
-  color: #94a3b8;
+  color: #8f5b84;
   font-size: 14px;
   letter-spacing: 0.2px;
-  background: linear-gradient(135deg, #111827, #1f2937);
+  background: linear-gradient(135deg, rgba(253, 224, 239, 0.92), rgba(251, 207, 232, 0.86));
 }
 
 .media-cover-overlay {
@@ -336,7 +423,7 @@ button.danger:hover {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(10, 16, 28, 0.46);
+  background: rgba(96, 33, 72, 0.42);
   opacity: 0;
   transition: opacity 0.25s ease;
   padding: 10px;
@@ -356,12 +443,12 @@ button.danger:hover {
 .media-name-line {
   padding: 8px 10px;
   font-size: 12px;
-  color: #cbd5e1;
+  color: #5e3557;
   letter-spacing: 0.15px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  background: #111827;
+  background: rgba(255, 238, 248, 0.78);
 }
 
 .media-list .media-card:hover .media-cover-img,
@@ -375,7 +462,7 @@ button.danger:hover {
 }
 
 .media-list .media-card:focus-visible {
-  outline: 2px solid #22c55e;
+  outline: 2px solid #ef5da8;
   outline-offset: 2px;
 }
 
@@ -394,20 +481,20 @@ button.danger:hover {
   height: 10px;
   border-radius: 999px;
   overflow: hidden;
-  border: 1px solid #334155;
-  background: #0b1220;
+  border: 1px solid rgba(220, 131, 181, 0.55);
+  background: rgba(255, 247, 252, 0.75);
 }
 
 .import-progress-bar {
   width: 0;
   height: 100%;
-  background: linear-gradient(90deg, #22c55e, #16a34a);
+  background: linear-gradient(90deg, #ef5da8, #ec4899);
   transition: width 0.2s ease;
 }
 
 .import-progress-text {
   font-size: 12px;
-  color: #86efac;
+  color: #b42373;
   letter-spacing: 0.2px;
 }
 
@@ -428,7 +515,7 @@ button.danger:hover {
   margin-top: 10px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: linear-gradient(145deg, #0b1220, #141e31);
+  background: linear-gradient(145deg, rgba(255, 244, 250, 0.82), rgba(255, 228, 242, 0.7));
   padding: 18px;
   display: grid;
   gap: 14px;
@@ -436,14 +523,14 @@ button.danger:hover {
 
 .audio-hero {
   border-radius: 10px;
-  border: 1px dashed #334155;
+  border: 1px dashed rgba(208, 101, 159, 0.7);
   min-height: 220px;
   display: grid;
   place-items: center;
-  color: #a5b4fc;
+  color: #8b3d70;
   font-size: 22px;
   letter-spacing: 0.5px;
-  background: radial-gradient(circle at 30% 30%, #1e293b, #0f172a 60%);
+  background: radial-gradient(circle at 30% 30%, rgba(255, 220, 240, 0.85), rgba(255, 239, 249, 0.78) 60%);
 }
 
 #roomPanel.audio-mode .audio-panel {
@@ -464,11 +551,11 @@ button.danger:hover {
 }
 
 .user-badge {
-  background: rgba(34, 197, 94, 0.16);
-  border: 1px solid rgba(34, 197, 94, 0.5);
+  background: rgba(244, 114, 182, 0.22);
+  border: 1px solid rgba(219, 39, 119, 0.45);
   padding: 8px 10px;
   border-radius: 999px;
-  color: #86efac;
+  color: #9d174d;
 }
 
 video {
@@ -520,7 +607,7 @@ video {
 }
 
 .member-list .owner {
-  color: #86efac;
+  color: #be185d;
 }
 
 .chat-box {
@@ -528,7 +615,7 @@ video {
   max-height: none;
   overflow: auto;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.7);
+  background: rgba(255, 245, 251, 0.68);
   border-radius: 10px;
   padding: 10px;
   display: grid;
@@ -545,7 +632,7 @@ video {
 }
 
 .chat-row b {
-  color: #86efac;
+  color: #be185d;
 }
 
 @media (max-width: 960px) {
