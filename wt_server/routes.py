@@ -35,6 +35,7 @@ from .schemas import (
     AdminCreateUserPayload,
     AdminLoginPayload,
     AdminRenameMediaPayload,
+    AdminUpdateMediaTypePayload,
     AdminUpdateProfilePayload,
     AdminUpdateUserPayload,
     LoginPayload,
@@ -322,6 +323,53 @@ def create_app() -> FastAPI:
         conn = db_conn()
         try:
             return rename_media_work(conn, media_key, payload.newWorkName)
+        finally:
+            conn.close()
+
+    @app.patch("/api/admin/media/{media_key}/type")
+    def admin_update_media_type(media_key: str, payload: AdminUpdateMediaTypePayload, _: str = Depends(require_admin)):
+        media_type = (payload.mediaType or "").strip()
+        if media_type not in {"movie", "RJ", "ASMR", "music", "shot"}:
+            raise HTTPException(status_code=422, detail="Invalid media type")
+
+        conn = db_conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM media_assets WHERE video_url LIKE ? OR audio_url LIKE ? ORDER BY updated_at DESC LIMIT 1",
+                (f"/media/work/{media_key}/%", f"/media/work/{media_key}/%"),
+            ).fetchone()
+            now_str = dt_to_str(now_utc())
+            if row:
+                conn.execute(
+                    "UPDATE media_assets SET media_type = ?, updated_at = ? WHERE id = ?",
+                    (media_type, now_str, row["id"]),
+                )
+            else:
+                # Some historical assets exist only on filesystem under media/work/<work>/ and
+                # have no DB row yet. Create a lightweight row so type update can persist.
+                file_index = collect_media_files()
+                file_meta = file_index.get(media_key)
+                if not file_meta:
+                    raise HTTPException(status_code=404, detail="Media not found")
+                conn.execute(
+                    """
+                    INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        media_key,
+                        file_meta.get("videoUrl") or "",
+                        file_meta.get("audioUrl") or "",
+                        f"/media/work/{media_key}/cover.jpg",
+                        media_type,
+                        0,
+                        int(file_meta.get("size") or 0),
+                        now_str,
+                        now_str,
+                    ),
+                )
+            conn.commit()
+            return {"ok": True, "mediaKey": media_key, "type": media_type}
         finally:
             conn.close()
 

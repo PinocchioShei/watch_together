@@ -48,6 +48,10 @@ class AdminRenameMediaPayload(BaseModel):
     newWorkName: str = Field(min_length=1, max_length=64)
 
 
+class AdminUpdateMediaTypePayload(BaseModel):
+    mediaType: str = Field(min_length=1, max_length=16)
+
+
 @dataclass
 class User:
     id: int

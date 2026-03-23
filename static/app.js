@@ -58,10 +58,15 @@ const modeAudioBtn = document.getElementById("modeAudioBtn");
 const refreshMediaBtn = document.getElementById("refreshMediaBtn");
 const mediaList = document.getElementById("mediaList");
 const mediaStatus = document.getElementById("mediaStatus");
+const roomMediaTypeFilter = document.getElementById("roomMediaTypeFilter");
 const importForm = document.getElementById("importForm");
 const videoFileInput = document.getElementById("videoFileInput");
 const importTypeSelect = document.getElementById("importTypeSelect");
 const coverFileInput = document.getElementById("coverFileInput");
+const importSubmitBtn = importForm ? importForm.querySelector("button[type='submit']") : null;
+const importProgressWrap = document.getElementById("importProgressWrap");
+const importProgressBar = document.getElementById("importProgressBar");
+const importProgressText = document.getElementById("importProgressText");
 const statusBar = document.getElementById("statusBar");
 const onlineCount = document.getElementById("onlineCount");
 const memberList = document.getElementById("memberList");
@@ -75,6 +80,7 @@ const chatInput = document.getElementById("chatInput");
 let chatModule = null;
 let loadRooms = async () => [];
 let tryRestoreRoom = async () => {};
+let importInFlight = false;
 
 window.addEventListener("beforeunload", stopTabLock);
 
@@ -91,6 +97,56 @@ function setLobbyStatus(msg, isError = false) {
 function setMediaStatus(msg, isError = false) {
   mediaStatus.textContent = msg || "";
   mediaStatus.style.color = isError ? "#fca5a5" : "#94a3b8";
+}
+
+function setImportProgress(percent, text = "") {
+  if (!importProgressWrap || !importProgressBar || !importProgressText) return;
+  const clamped = Math.max(0, Math.min(100, Number(percent) || 0));
+  importProgressWrap.classList.remove("hidden");
+  importProgressBar.style.width = `${clamped}%`;
+  importProgressText.textContent = text || `${Math.round(clamped)}%`;
+}
+
+function hideImportProgress() {
+  if (!importProgressWrap || !importProgressBar || !importProgressText) return;
+  importProgressWrap.classList.add("hidden");
+  importProgressBar.style.width = "0%";
+  importProgressText.textContent = "0%";
+}
+
+function xhrUpload(url, formData) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    if (state.token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
+    }
+    xhr.timeout = 15 * 60 * 1000;
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable) {
+        const p = (ev.loaded / ev.total) * 100;
+        setImportProgress(p, `Uploading ${Math.round(p)}% (${Math.round(ev.loaded / 1024 / 1024)} / ${Math.round(ev.total / 1024 / 1024)} MB)`);
+      } else {
+        setImportProgress(0, "Uploading...");
+      }
+    };
+    xhr.onload = () => {
+      let data = null;
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data || {});
+      } else if (xhr.status === 401) {
+        reject(new Error("Session expired. Please login again."));
+      } else {
+        reject(new Error((data && data.detail) || `HTTP ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network unstable, please retry."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Network is too slow for this file, please retry on stable Wi-Fi."));
+    xhr.send(formData);
+  });
 }
 
 function formatImportError(detail) {
@@ -208,6 +264,34 @@ function resolveMediaUrlForMode(item, mode) {
   return item.videoUrl || "";
 }
 
+function getRoomMediaFilterType() {
+  return roomMediaTypeFilter ? (roomMediaTypeFilter.value || "movie") : "movie";
+}
+
+function getVisibleMediaItems() {
+  const selectedType = getRoomMediaFilterType();
+  if (selectedType === "all") return state.mediaLibrary;
+  return state.mediaLibrary.filter((item) => String(item.type || "movie") === selectedType);
+}
+
+function ensureFilterShowsActiveItem(source = "") {
+  if (!roomMediaTypeFilter) return;
+  const selectedType = getRoomMediaFilterType();
+  if (selectedType === "all") return;
+  const active = state.mediaLibrary.find((it) =>
+    (state.activeMediaId && it.id === state.activeMediaId) ||
+    (state.activeMediaUrl && normalizeUrl(resolveMediaUrlForMode(it, state.playMode)) === normalizeUrl(state.activeMediaUrl)),
+  );
+  if (!active) return;
+  const activeType = String(active.type || "movie");
+  if (activeType !== selectedType) {
+    roomMediaTypeFilter.value = "all";
+    if (source === "remote") {
+      setMediaStatus("Synced media is outside current filter; switched filter to all.");
+    }
+  }
+}
+
 function setPlayMode(mode, { silent = false } = {}) {
   const nextMode = mode === "audio" ? "audio" : "video";
   if (state.playMode === nextMode && !silent) {
@@ -251,7 +335,14 @@ function renderMediaLibrary() {
     mediaList.appendChild(li);
     return;
   }
-  state.mediaLibrary.forEach((item) => {
+  const visibleItems = getVisibleMediaItems();
+  if (!visibleItems.length) {
+    const li = document.createElement("li");
+    li.textContent = "No media files under current type filter.";
+    mediaList.appendChild(li);
+    return;
+  }
+  visibleItems.forEach((item) => {
     const li = document.createElement("li");
     li.className = "media-item";
     const btn = document.createElement("button");
@@ -329,6 +420,7 @@ async function loadMediaLibrary() {
     });
     state.activeMediaId = found?.id || null;
   }
+  ensureFilterShowsActiveItem();
   renderMediaLibrary();
 }
 
@@ -630,6 +722,7 @@ function applyRemoteState(data, by) {
     });
     state.activeMediaId = media?.id || null;
     player.src = incomingUrl;
+    ensureFilterShowsActiveItem("remote");
     renderMediaLibrary();
   }
 
@@ -716,23 +809,36 @@ tabRegister.onclick = () => showTab("register");
 
 importForm.onsubmit = async (e) => {
   e.preventDefault();
+  if (importInFlight) {
+    setMediaStatus("Upload in progress, please wait...", true);
+    setLobbyStatus("Upload in progress, please wait...", true);
+    return;
+  }
   if (!videoFileInput.files || !videoFileInput.files[0]) {
     setMediaStatus("Choose a local media file first.", true);
+    setLobbyStatus("Choose a local media file first.", true);
     return;
   }
   if (!importTypeSelect.value) {
     setMediaStatus("Choose media type first.", true);
+    setLobbyStatus("Choose media type first.", true);
     return;
   }
   try {
+    importInFlight = true;
+    if (importSubmitBtn) importSubmitBtn.disabled = true;
+    hideImportProgress();
+    setImportProgress(0, "Preparing upload...");
     setMediaStatus("Importing media into library...");
+    setLobbyStatus("Importing media into library...");
     const fd = new FormData();
     fd.append("file", videoFileInput.files[0]);
     fd.append("media_type", importTypeSelect.value);
     if (coverFileInput.files && coverFileInput.files[0]) {
       fd.append("cover", coverFileInput.files[0]);
     }
-    const upload = await api("/api/upload-video", { method: "POST", body: fd });
+    const upload = await xhrUpload("/api/upload-video", fd);
+    setImportProgress(100, "Upload complete, processing media...");
     videoFileInput.value = "";
     coverFileInput.value = "";
     const profile = upload.profile || {};
@@ -741,9 +847,17 @@ importForm.onsubmit = async (e) => {
     setMediaStatus(
       `Imported (${modeText}, ${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
     );
+    setLobbyStatus("Import complete. You can now join a room and play it.");
     await loadMediaLibrary();
+    setTimeout(hideImportProgress, 1200);
   } catch (err) {
-    setMediaStatus(formatImportError(err?.message), true);
+    hideImportProgress();
+    const msg = formatImportError(err?.message);
+    setMediaStatus(msg, true);
+    setLobbyStatus(msg, true);
+  } finally {
+    importInFlight = false;
+    if (importSubmitBtn) importSubmitBtn.disabled = false;
   }
 };
 
@@ -837,3 +951,10 @@ const authModule = createAuthModule({
 });
 authModule.bindAuthEvents();
 authModule.tryBootSession();
+
+if (roomMediaTypeFilter) {
+  roomMediaTypeFilter.value = roomMediaTypeFilter.value || "movie";
+  roomMediaTypeFilter.onchange = () => {
+    renderMediaLibrary();
+  };
+}

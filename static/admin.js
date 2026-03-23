@@ -14,6 +14,22 @@ const usersTable = document.getElementById("usersTable");
 const mediaTable = document.getElementById("mediaTable");
 const roomsTable = document.getElementById("roomsTable");
 const importMsg = document.getElementById("importMsg");
+const mediaDetailOverlay = document.getElementById("mediaDetailOverlay");
+const mediaDetailModal = document.getElementById("mediaDetailModal");
+const mediaDetailBody = document.getElementById("mediaDetailBody");
+const mediaDetailClose = document.getElementById("mediaDetailClose");
+const mediaDetailType = document.getElementById("mediaDetailType");
+const mediaDetailRename = document.getElementById("mediaDetailRename");
+const mediaDetailDelete = document.getElementById("mediaDetailDelete");
+const mediaTypeFilter = document.getElementById("mediaTypeFilter");
+const tabButtons = Array.from(document.querySelectorAll(".admin-tab-btn"));
+const tabPanels = {
+  users: document.getElementById("tab-users"),
+  media: document.getElementById("tab-media"),
+  rooms: document.getElementById("tab-rooms"),
+};
+let mediaItems = [];
+let activeMediaItem = null;
 
 function setLoginMsg(msg, err = false) {
   loginMsg.textContent = msg || "";
@@ -71,11 +87,56 @@ function parseWorkPath(url) {
   return { work: m[1], file: m[2] };
 }
 
+function closeMediaDetail() {
+  activeMediaItem = null;
+  if (!mediaDetailOverlay) return;
+  mediaDetailOverlay.classList.add("hidden");
+}
+
+function openMediaDetail(item) {
+  if (!item || !mediaDetailOverlay || !mediaDetailBody) return;
+  activeMediaItem = item;
+  const v = parseWorkPath(item.videoUrl || "");
+  const a = parseWorkPath(item.audioUrl || "");
+  const workFolder = v.work !== "-" ? v.work : a.work;
+  const cover = item.coverUrl || "";
+  mediaDetailBody.innerHTML = [
+    ["_cover", cover],
+    ["Work", workFolder || item.name || "-"],
+    ["Type", item.type || "movie"],
+    ["Name", item.name || "-"],
+    ["Media Key", item.mediaKey || "-"],
+    ["Video URL", item.videoUrl || "-"],
+    ["Audio URL", item.audioUrl || "-"],
+    ["Cover URL", item.coverUrl || "-"],
+    ["Size", formatBytes(item.size || 0)],
+    ["Duration", `${Math.round(Number(item.duration || 0))}s`],
+    ["Updated At", item.updatedAt || "-"],
+  ].map(([k, val]) => {
+    if (k === "_cover") {
+      return `<img class="media-detail-cover" src="${escapeHtml(String(val || ""))}" alt="cover" loading="lazy" />`;
+    }
+    return `<div class="media-detail-row"><b>${escapeHtml(String(k))}</b><span>${escapeHtml(String(val))}</span></div>`;
+  }).join("");
+  mediaDetailOverlay.classList.remove("hidden");
+}
+
 function setAuthUI(ok) {
   loginCard.classList.toggle("hidden", ok);
   dashboard.classList.toggle("hidden", !ok);
   logoutBtn.classList.toggle("hidden", !ok);
   document.body.classList.toggle("login-mode", !ok);
+}
+
+function setActiveTab(tabName) {
+  const target = tabPanels[tabName] ? tabName : "users";
+  tabButtons.forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === target);
+  });
+  Object.entries(tabPanels).forEach(([name, panel]) => {
+    if (!panel) return;
+    panel.classList.toggle("active", name === target);
+  });
 }
 
 async function api(path, options = {}) {
@@ -143,21 +204,54 @@ async function loadUsers() {
 async function loadMedia() {
   const data = await api("/api/admin/media", { method: "GET" });
   const rows = data.items || [];
-  let html = "<table class=\"media-table\"><thead><tr><th>Work</th><th>Type</th><th>Video</th><th>Audio</th><th>Size</th><th>Actions</th></tr></thead><tbody>";
-  rows.forEach((m) => {
+  const selectedType = mediaTypeFilter ? (mediaTypeFilter.value || "movie") : "movie";
+  const visible = selectedType === "all"
+    ? rows
+    : rows.filter((m) => String(m.type || "movie") === selectedType);
+  mediaItems = visible;
+  let html = "<div class=\"media-card-grid\">";
+  visible.forEach((m, idx) => {
     const v = parseWorkPath(m.videoUrl || "");
     const a = parseWorkPath(m.audioUrl || "");
     const workFolder = v.work !== "-" ? v.work : a.work;
     const videoState = v.file && v.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
     const audioState = a.file && a.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
-    html += `<tr><td>${escapeHtml(workFolder || m.name || "-")}</td><td>${escapeHtml(m.type || "movie")}</td><td>${videoState}</td><td>${audioState}</td><td>${formatBytes(m.size || 0)}</td><td><div class=\"row-actions\"><button data-rename-media=\"${escapeHtml(m.mediaKey || "")}\">Rename</button><button class=\"danger\" data-del-media=\"${escapeHtml(m.mediaKey || "")}\">Delete</button></div></td></tr>`;
+    html += `
+      <button type="button" class="admin-media-card" data-media-index="${idx}">
+        <div class="admin-media-cover-wrap">
+          <img class="admin-media-cover-img" src="${escapeHtml(m.coverUrl || "")}" alt="${escapeHtml(workFolder || m.name || "media")}" loading="lazy" />
+          <div class="admin-media-badges">
+            ${videoState}
+            ${audioState}
+          </div>
+        </div>
+        <div class="admin-media-meta">
+          <div class="admin-media-name">${escapeHtml(workFolder || m.name || "-")}</div>
+          <div class="admin-media-sub">${escapeHtml(m.type || "movie")} · ${formatBytes(m.size || 0)}</div>
+        </div>
+      </button>
+    `;
   });
-  html += "</tbody></table>";
+  html += "</div>";
+  if (!visible.length) {
+    html = "<p class=\"msg\">No media under current type filter.</p>";
+  }
   mediaTable.innerHTML = html;
 
-  mediaTable.querySelectorAll("button[data-rename-media]").forEach((btn) => {
+  mediaTable.querySelectorAll("button[data-media-index]").forEach((btn) => {
     btn.onclick = async () => {
-      const mediaKey = btn.getAttribute("data-rename-media");
+      const idx = Number(btn.getAttribute("data-media-index") || -1);
+      const item = idx >= 0 ? mediaItems[idx] : null;
+      if (!item) return;
+      openMediaDetail(item);
+    };
+  });
+
+  if (mediaDetailRename) {
+    mediaDetailRename.onclick = async () => {
+      const item = activeMediaItem;
+      if (!item) return;
+      const mediaKey = item.mediaKey || "";
       const nextName = prompt("New work folder name:");
       if (!nextName || !nextName.trim()) return;
       try {
@@ -166,23 +260,54 @@ async function loadMedia() {
           body: JSON.stringify({ newWorkName: nextName.trim() }),
         });
         setImportMsg("Work renamed.");
+        closeMediaDetail();
         await loadMedia();
       } catch (err) {
         setImportMsg(err.message || "Rename failed", true);
       }
     };
-  });
+  }
 
-  mediaTable.querySelectorAll("button[data-del-media]").forEach((btn) => {
-    btn.onclick = async () => {
-      const key = btn.getAttribute("data-del-media");
+  if (mediaDetailType) {
+    mediaDetailType.onclick = async () => {
+      const item = activeMediaItem;
+      if (!item) return;
+      const mediaKey = item.mediaKey || "";
+      if (!mediaKey) return;
+      const current = String(item.type || "movie");
+      const next = prompt("Set media type (movie/RJ/ASMR/music/shot):", current);
+      if (!next) return;
+      const value = next.trim();
+      if (!["movie", "RJ", "ASMR", "music", "shot"].includes(value)) {
+        setImportMsg("Invalid type. Use movie/RJ/ASMR/music/shot.", true);
+        return;
+      }
+      try {
+        await api(`/api/admin/media/${encodeURIComponent(mediaKey)}/type`, {
+          method: "PATCH",
+          body: JSON.stringify({ mediaType: value }),
+        });
+        setImportMsg("Media type updated.");
+        closeMediaDetail();
+        await loadMedia();
+      } catch (err) {
+        setImportMsg(err.message || "Update type failed", true);
+      }
+    };
+  }
+
+  if (mediaDetailDelete) {
+    mediaDetailDelete.onclick = async () => {
+      const item = activeMediaItem;
+      const key = item?.mediaKey || "";
       if (!key) return;
       if (!confirm(`Delete media ${key}?`)) return;
       await api(`/api/admin/media/${encodeURIComponent(key)}`, { method: "DELETE" });
+      closeMediaDetail();
       await loadMedia();
       await loadOverview();
     };
-  });
+  }
 }
 
 async function loadRooms() {
@@ -207,6 +332,40 @@ async function loadRooms() {
 
 async function bootstrapDashboard() {
   await Promise.all([loadOverview(), loadUsers(), loadMedia(), loadRooms()]);
+  setActiveTab("users");
+}
+
+tabButtons.forEach((btn) => {
+  btn.onclick = () => {
+    setActiveTab(btn.dataset.tab || "users");
+  };
+});
+
+if (mediaTypeFilter) {
+  mediaTypeFilter.value = mediaTypeFilter.value || "movie";
+  mediaTypeFilter.onchange = async () => {
+    await loadMedia();
+  };
+}
+
+if (mediaDetailClose) {
+  mediaDetailClose.onclick = () => {
+    closeMediaDetail();
+  };
+}
+
+if (mediaDetailOverlay) {
+  mediaDetailOverlay.addEventListener("click", (ev) => {
+    if (ev.target === mediaDetailOverlay) {
+      closeMediaDetail();
+    }
+  });
+}
+
+if (mediaDetailModal) {
+  mediaDetailModal.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+  });
 }
 
 loginForm.onsubmit = async (e) => {

@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Admin</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260322a" />
+    <link rel="stylesheet" href="/static/admin.css?v=20260323g" />
   </head>
   <body>
     <div class="shell">
       <header class="header">
         <h1>Admin Dashboard</h1>
-        <button id="logoutBtn" class="hidden">Logout</button>
+        <button id="logoutBtn" class="hidden header-logout">Logout</button>
       </header>
 
       <section id="loginCard" class="card login-card">
@@ -31,58 +31,95 @@
           <article class="card metric"><h3>Media</h3><p id="metricMedia">-</p></article>
         </section>
 
-        <section class="grid split">
-          <article class="card">
-            <div class="title-row"><h3>User Management</h3><button id="refreshUsers">Refresh</button></div>
-            <form id="createUserForm" class="inline-form">
-              <input id="newUsername" placeholder="username" minlength="3" required />
-              <input id="newPassword" type="password" placeholder="password" minlength="6" required />
-              <button type="submit">Create User</button>
-            </form>
-            <form id="updateAdminForm" class="inline-form">
-              <input id="adminNewUsername" placeholder="new admin username (optional)" minlength="3" />
-              <input id="adminNewPassword" type="password" placeholder="new admin password (optional)" minlength="6" />
-              <input id="adminCurrentPassword" type="password" placeholder="current admin password (required)" required />
-              <button type="submit">Update Admin Profile</button>
-            </form>
-            <p id="adminProfileMsg" class="msg"></p>
-            <div id="usersTable" class="table-wrap"></div>
-          </article>
+        <section class="admin-layout">
+          <aside class="card admin-nav">
+            <h3>Manage</h3>
+            <button type="button" class="admin-tab-btn active" data-tab="users">Users</button>
+            <button type="button" class="admin-tab-btn" data-tab="media">Media</button>
+            <button type="button" class="admin-tab-btn" data-tab="rooms">Rooms</button>
+          </aside>
 
-          <article class="card">
-            <div class="title-row"><h3>Media Management</h3><button id="refreshMedia">Refresh</button></div>
-            <form id="importForm" class="inline-form">
-              <div class="import-file-row">
-                <label class="import-field">Media file (video/audio)
-                  <input id="importFile" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" required />
-                </label>
-                <label class="import-field">Cover image (optional)
-                  <input id="importCover" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
-                </label>
-              </div>
-              <select id="importType" required>
-                <option value="">Select type</option>
-                <option value="movie">movie</option>
-                <option value="RJ">RJ</option>
-                <option value="ASMR">ASMR</option>
-                <option value="music">music</option>
-                <option value="shot">shot</option>
-              </select>
-              <p class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
-              <button type="submit">Import Video/Audio</button>
-            </form>
-            <p id="importMsg" class="msg"></p>
-            <div id="mediaTable" class="table-wrap"></div>
-          </article>
-        </section>
+          <section class="admin-content">
+            <article id="tab-users" class="card tab-panel active">
+              <div class="title-row"><h3>User Management</h3><button id="refreshUsers">Refresh</button></div>
+              <form id="createUserForm" class="inline-form">
+                <input id="newUsername" placeholder="username" minlength="3" required />
+                <input id="newPassword" type="password" placeholder="password" minlength="6" required />
+                <button type="submit">Create User</button>
+              </form>
+              <form id="updateAdminForm" class="inline-form">
+                <input id="adminNewUsername" placeholder="new admin username (optional)" minlength="3" />
+                <input id="adminNewPassword" type="password" placeholder="new admin password (optional)" minlength="6" />
+                <input id="adminCurrentPassword" type="password" placeholder="current admin password (required)" required />
+                <button type="submit">Update Admin Profile</button>
+              </form>
+              <p id="adminProfileMsg" class="msg"></p>
+              <div id="usersTable" class="table-wrap"></div>
+            </article>
 
-        <section class="card" style="margin-top: 16px;">
-          <div class="title-row"><h3>Room Management</h3><button id="refreshRooms">Refresh</button></div>
-          <div id="roomsTable" class="table-wrap"></div>
+            <article id="tab-media" class="card tab-panel">
+              <div class="title-row"><h3>Media Management</h3><button id="refreshMedia">Refresh</button></div>
+              <form id="importForm" class="inline-form">
+                <div class="import-file-row">
+                  <label class="import-field">Media file (video/audio)
+                    <input id="importFile" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" required />
+                  </label>
+                  <label class="import-field">Cover image (optional)
+                    <input id="importCover" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
+                  </label>
+                </div>
+                <select id="importType" required>
+                  <option value="">Select type</option>
+                  <option value="movie">movie</option>
+                  <option value="RJ">RJ</option>
+                  <option value="ASMR">ASMR</option>
+                  <option value="music">music</option>
+                  <option value="shot">shot</option>
+                </select>
+                <p class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
+                <button type="submit">Import Video/Audio</button>
+              </form>
+              <p id="importMsg" class="msg"></p>
+              <section class="media-library-block">
+                <div class="media-filter-row compact">
+                  <label for="mediaTypeFilter">Type Filter</label>
+                  <select id="mediaTypeFilter">
+                    <option value="movie" selected>movie</option>
+                    <option value="RJ">RJ</option>
+                    <option value="ASMR">ASMR</option>
+                    <option value="music">music</option>
+                    <option value="shot">shot</option>
+                    <option value="all">all</option>
+                  </select>
+                </div>
+                <div id="mediaTable" class="table-wrap"></div>
+              </section>
+            </article>
+
+            <article id="tab-rooms" class="card tab-panel">
+              <div class="title-row"><h3>Room Management</h3><button id="refreshRooms">Refresh</button></div>
+              <div id="roomsTable" class="table-wrap"></div>
+            </article>
+          </section>
         </section>
       </main>
+
+      <div id="mediaDetailOverlay" class="media-detail-overlay hidden">
+        <div id="mediaDetailModal" class="media-detail-modal card" role="dialog" aria-modal="true" aria-labelledby="mediaDetailTitle">
+          <div class="title-row">
+            <h3 id="mediaDetailTitle">Media Detail</h3>
+            <button type="button" id="mediaDetailClose" class="header-logout">Close</button>
+          </div>
+          <div id="mediaDetailBody" class="media-detail-body"></div>
+          <div class="row-actions media-detail-actions">
+            <button type="button" id="mediaDetailType">Change Type</button>
+            <button type="button" id="mediaDetailRename">Rename</button>
+            <button type="button" id="mediaDetailDelete" class="danger">Delete</button>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <script type="module" src="/static/admin.js?v=20260322e" defer></script>
+    <script type="module" src="/static/admin.js?v=20260323g" defer></script>
   </body>
   </html>

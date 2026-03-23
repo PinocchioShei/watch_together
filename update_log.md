@@ -318,3 +318,72 @@
   - explicit upload-timeout error message returned for better user guidance.
 - Updated user/admin import error mapping to show clearer upload-timeout hint (`stable network / prefer Wi-Fi`) instead of generic network-failed wording.
 - Bumped frontend cache versions for both pages (`index` build `20260322e`, `app.js/admin.js` query version `20260322e`).
+
+## 2026-03-23 09:46
+- Moved user-side media import form from room playback page left column to lobby (room selection) panel, so import now happens before entering playback and the room media column is dedicated to browsing/selection.
+- Increased playback-page media list vertical space after relocation (`media-column` height budget expanded, `media-list` min height increased) for better cover browsing density.
+- Added lobby import block visual separation (top divider + spacing) to keep room creation/join and import flows clear.
+- Bumped main frontend cache/build version for rollout (`styles.css/app.js` and footer build label -> `20260323a`).
+
+## 2026-03-23 10:16
+- Added real-time upload progress UI for user import in lobby panel: progress bar + percentage/MB text now updates from browser `XMLHttpRequest.upload.onprogress` events.
+- Switched user import submission path from generic fetch wrapper to dedicated XHR upload call so mobile/large-file uploads can report transfer progress continuously.
+- Added upload in-flight guard and submit-button lock to prevent duplicate imports while current upload is running.
+- Synced import status messaging to both lobby and media status areas (preparing/uploading/success/failure) after moving import form to lobby.
+- Bumped main frontend cache/build version for rollout (`styles.css/app.js` and footer build label -> `20260323b`).
+
+## 2026-03-23 10:44
+- Investigated tablet-only playback failures while phone playback succeeds under same domain/network. Root cause likely codec-level hardware decode compatibility (several existing library videos are H.264 High Profile Level 5.0/5.1, which many tablet/browser decoders reject).
+- Hardened import compatibility rule in backend (`wt_server/media.py`): browser-friendly fast-path copy now requires H.264 + AAC/MP3 plus `yuv420p` pixel format and video level <= 4.1; otherwise import will auto-transcode to mobile-safe MP4.
+- This change affects new imports immediately; existing high-level assets remain as-is until re-imported/transcoded.
+
+## 2026-03-23 11:14
+- Completed one-time batch transcode for existing incompatible library videos to mobile/tablet-safe profile (`H.264`, `yuv420p`, `level <= 4.1`, MP4 faststart).
+- Transcoded works: `123`, `Apollo`, `cubism`, `furachi250721`, `实验演示视频`; `mare_karin_25037` already compatible and kept unchanged.
+- Updated DB `duration/size/updated_at` for processed works after in-place replacement so media metadata remains consistent.
+- Added reusable maintenance script `tools/transcode_existing_mobile_safe.py` for future compatibility reprocessing if needed.
+
+## 2026-03-23 11:29
+- Redesigned admin dashboard management layout to sidebar-tab mode: left side now has tab switch (`Users / Media / Rooms`), right side shows one focused management panel at a time for larger usable workspace.
+- Kept all existing management capabilities intact (user create/reset/delete + admin profile update, media import/rename/delete, room delete) while moving them into independent tab panels.
+- Added tab activation logic in `static/admin.js` (`setActiveTab`) with default entry tab `Users` after dashboard bootstrap.
+- Updated admin responsive behavior: desktop uses fixed left nav + large content area; mobile collapses tabs into a 3-column row while preserving panel switching.
+- Bumped admin static cache versions (`admin.css/admin.js` -> `20260323a`).
+
+## 2026-03-23 12:01
+- Refined admin layout sizing and hierarchy:
+  - header title is now centered;
+  - logout button is reduced and pinned to the top-right;
+  - left `Manage` panel now stretches to match right content panel height with improved internal spacing.
+- Added bounded main management viewport (`admin-layout` max height) and enabled panel-level scrolling so oversized content uses scrollbars inside the management area instead of pushing the whole page.
+- Adjusted active tab panel to grid+scroll container and tuned table max-height for better in-panel fit.
+- Bumped admin asset cache versions (`admin.css/admin.js` -> `20260323b`).
+
+## 2026-03-23 13:03
+- Redesigned admin `Media` management from table rows to cover-card gallery (aligned with user-facing cover visual style): each asset now renders as a 16:9 image card with type/size and video/audio availability badges.
+- Added media detail floating modal: clicking any media card opens a centered overlay showing full item fields (work/type/key/urls/size/duration/update time).
+- Added overlay dismiss interactions per request: clicking any area outside the modal closes it; explicit `Close` button also closes modal.
+- Kept media operations in the modal (`Rename`, `Delete`) and wired them to existing backend endpoints so functionality remains unchanged.
+- Bumped admin static cache versions (`admin.css/admin.js` -> `20260323c`).
+
+## 2026-03-23 14:25
+- Added media-type edit action in admin media detail modal: new `Change Type` button supports updating work type to one of the five allowed values (`movie`, `RJ`, `ASMR`, `music`, `shot`).
+- Added backend endpoint `PATCH /api/admin/media/{media_key}/type` to persist media type updates (`media_assets.media_type`) with validation.
+- Added new schema payload `AdminUpdateMediaTypePayload` and wired admin frontend to call the endpoint and refresh media gallery after update.
+- Bumped admin static cache versions (`admin.css/admin.js` -> `20260323e`).
+
+## 2026-03-23 14:36
+- Fixed edge case where changing type for some historical work folders (e.g. `多索雷斯假日`) appeared successful but did not persist: these assets existed only on filesystem under `media/work/` without a corresponding `media_assets` DB row.
+- Updated `PATCH /api/admin/media/{media_key}/type` behavior: if DB row is missing, backend now creates a lightweight media_assets row from scanned filesystem metadata and then saves requested `media_type`, ensuring type updates persist for legacy/untracked works too.
+
+## 2026-03-23 14:42
+- Added media-library type filter in admin `Media` tab: selector is placed at the top of media section and filters card list by selected type.
+- Default filter set to `movie` per request; supports quick switching to `RJ/ASMR/music/shot` and optional `all` view.
+- Implemented client-side card filtering with empty-state prompt when current type has no items.
+- Bumped admin static cache versions (`admin.css/admin.js` -> `20260323f`).
+
+## 2026-03-23 14:57
+- Added user-room media type filter (same type options as admin) above room media card list; default selection is `movie`.
+- Media card list now filters by selected type on the client side, with empty-state hint when no cards match current filter.
+- Added sync-safe behavior for multi-user rooms: when remote sync switches to a media item outside local filter, frontend automatically switches filter to `all` so synced active media remains visible/trackable for every participant.
+- Bumped main frontend cache/build version for rollout (`styles.css/app.js` and footer build label -> `20260323c`).

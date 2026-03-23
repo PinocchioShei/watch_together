@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Local</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260322d" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260323e" />
   </head>
   <body>
     <div class="page auth-only">
@@ -53,6 +53,39 @@
             </form>
             <p id="lobbyStatus" class="status">Create a room or join an existing one.</p>
             <ul id="roomList" class="room-list"></ul>
+
+            <div class="lobby-import-block">
+              <div class="section-title compact">
+                <h4>Import Media</h4>
+              </div>
+              <form id="importForm" class="inline-form import-form" autocomplete="off">
+                <div class="import-file-row">
+                  <label class="import-field">Media file (video/audio)
+                    <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" />
+                  </label>
+                  <label class="import-field">Cover image (optional)
+                    <input id="coverFileInput" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
+                  </label>
+                </div>
+                <select id="importTypeSelect" required>
+                  <option value="">Select type</option>
+                  <option value="movie">movie</option>
+                  <option value="RJ">RJ</option>
+                  <option value="ASMR">ASMR</option>
+                  <option value="music">music</option>
+                  <option value="shot">shot</option>
+                </select>
+                <p class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
+                <button type="submit">Import To Library</button>
+                <div id="importProgressWrap" class="import-progress hidden" aria-live="polite">
+                  <div class="import-progress-track">
+                    <div id="importProgressBar" class="import-progress-bar"></div>
+                  </div>
+                  <div id="importProgressText" class="import-progress-text">0%</div>
+                </div>
+              </form>
+              <p class="status">Import saves each work into `media/work/&lt;work&gt;/` with video/audio files when available.</p>
+            </div>
           </section>
 
           <section id="roomPanel" class="card hidden">
@@ -73,30 +106,19 @@
                   <h4>Media Library</h4>
                   <button id="refreshMediaBtn">Refresh</button>
                 </div>
-                <ul id="mediaList" class="media-list"></ul>
-                <p id="mediaStatus" class="status">Select a media file to play and sync.</p>
-
-                <form id="importForm" class="inline-form import-form">
-                  <div class="import-file-row">
-                    <label class="import-field">Media file (video/audio)
-                      <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" />
-                    </label>
-                    <label class="import-field">Cover image (optional)
-                      <input id="coverFileInput" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
-                    </label>
-                  </div>
-                  <select id="importTypeSelect" required>
-                    <option value="">Select type</option>
-                    <option value="movie">movie</option>
+                <div class="media-filter-row">
+                  <label for="roomMediaTypeFilter">Type</label>
+                  <select id="roomMediaTypeFilter">
+                    <option value="movie" selected>movie</option>
                     <option value="RJ">RJ</option>
                     <option value="ASMR">ASMR</option>
                     <option value="music">music</option>
                     <option value="shot">shot</option>
+                    <option value="all">all</option>
                   </select>
-                  <p class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
-                  <button type="submit">Import To Library</button>
-                </form>
-                <p class="status">Import saves each work into `media/work/<work>/` with video/audio files when available.</p>
+                </div>
+                <ul id="mediaList" class="media-list"></ul>
+                <p id="mediaStatus" class="status">Select a media file to play and sync.</p>
               </aside>
 
               <div class="video-column">
@@ -128,10 +150,10 @@
         </section>
       </main>
       <footer class="app-footer">
-        <span>Frontend Build: 20260322e</span>
+        <span>Frontend Build: 20260323e</span>
       </footer>
     </div>
 
-    <script type="module" src="/static/app.js?v=20260322e" defer></script>
+    <script type="module" src="/static/app.js?v=20260323e" defer></script>
   </body>
 </html>

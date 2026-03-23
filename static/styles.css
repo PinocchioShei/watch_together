@@ -173,6 +173,12 @@ button.danger:hover {
   max-width: 980px;
 }
 
+.lobby-import-block {
+  margin-top: 14px;
+  border-top: 1px solid rgba(51, 65, 85, 0.75);
+  padding-top: 12px;
+}
+
 .section-title {
   display: flex;
   justify-content: space-between;
@@ -228,13 +234,17 @@ button.danger:hover {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr) 300px;
   gap: 16px;
+  height: calc(100vh - 220px);
+  min-height: 560px;
+  align-items: stretch;
 }
 
 .media-column {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 10px;
-  align-content: start;
-  max-height: calc(100vh - 230px);
+  align-content: stretch;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -242,15 +252,40 @@ button.danger:hover {
   margin-bottom: 0;
 }
 
+.media-filter-row {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.media-filter-row label {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.media-filter-row select {
+  border-radius: 9px;
+  border: 1px solid #334155;
+  background: #0b1220;
+  color: #dbeafe;
+  padding: 7px 9px;
+}
+
+.media-column .media-filter-row {
+  margin: 2px 0 4px;
+}
+
 .media-list {
   list-style: none;
   padding: 0;
   margin: 0;
-  min-height: 220px;
-  max-height: 100%;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   display: grid;
   gap: 12px;
+  align-content: start;
 }
 
 .media-item {
@@ -348,8 +383,41 @@ button.danger:hover {
   margin-top: 6px;
 }
 
+.import-progress {
+  margin-top: 6px;
+  display: grid;
+  gap: 6px;
+}
+
+.import-progress-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid #334155;
+  background: #0b1220;
+}
+
+.import-progress-bar {
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #16a34a);
+  transition: width 0.2s ease;
+}
+
+.import-progress-text {
+  font-size: 12px;
+  color: #86efac;
+  letter-spacing: 0.2px;
+}
+
 .video-column {
   min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-content: stretch;
+  overflow: hidden;
 }
 
 #roomPanel.audio-mode .video-column video {
@@ -404,11 +472,12 @@ button.danger:hover {
 }
 
 video {
-  margin-top: 10px;
+  margin: auto 0;
   background: #000;
   width: 100%;
   aspect-ratio: 16 / 9;
-  min-height: clamp(320px, 52vh, 760px);
+  max-height: min(68vh, 760px);
+  min-height: 0;
 }
 
 .status {
@@ -418,9 +487,12 @@ video {
 }
 
 .chat-wrap {
-  margin-top: 14px;
+  margin-top: 0;
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 10px;
+  height: 100%;
+  min-height: 0;
 }
 
 .members-panel {
@@ -452,8 +524,8 @@ video {
 }
 
 .chat-box {
-  min-height: 420px;
-  max-height: 520px;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   border: 1px solid var(--border);
   background: rgba(15, 23, 42, 0.7);
@@ -485,6 +557,8 @@ video {
 
   .room-content {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
   }
 
   #roomPanel.audio-mode .room-content {
@@ -497,7 +571,8 @@ video {
   }
 
   .media-column {
-    max-height: none;
+    grid-template-rows: auto auto minmax(0, 300px) auto;
+    min-height: 0;
   }
 
   .media-list {

@@ -431,12 +431,37 @@ def extract_media_profile(probe_result: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def is_browser_friendly_mp4(profile: dict[str, str]) -> bool:
-    return (
+def is_browser_friendly_mp4(profile: dict[str, str], probe_result: dict[str, Any]) -> bool:
+    if not (
         profile["container"] in {"mov", "mp4", "m4a", "3gp", "3g2", "mj2"}
         and profile["videoCodec"] == "h264"
         and profile["audioCodec"] in {"aac", "mp3", "none"}
+    ):
+        return False
+
+    streams = probe_result.get("streams") or []
+    v_stream = next(
+        (
+            s
+            for s in streams
+            if s.get("codec_type") == "video" and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+        ),
+        {},
     )
+
+    pix_fmt = str(v_stream.get("pix_fmt") or "").lower()
+    if pix_fmt and pix_fmt != "yuv420p":
+        return False
+
+    try:
+        level = int(v_stream.get("level") or 0)
+    except (TypeError, ValueError):
+        level = 0
+    # Mobile/tablet browser hardware decoders are less tolerant for H.264 L5+.
+    if level and level > 41:
+        return False
+
+    return True
 
 
 def allocate_media_stem(original_stem: str) -> str:
@@ -514,7 +539,7 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
         raise HTTPException(status_code=422, detail="Invalid media type")
 
     if has_video:
-        if is_browser_friendly_mp4(profile):
+        if is_browser_friendly_mp4(profile, probe_result):
             cmd = [
                 "ffmpeg", "-y", "-i", str(raw_path),
                 "-c:v", "copy", "-c:a", "copy" if has_audio else "aac",
