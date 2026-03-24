@@ -25,6 +25,9 @@ const mediaDetailRename = document.getElementById("mediaDetailRename");
 const mediaDetailDelete = document.getElementById("mediaDetailDelete");
 const mediaTypeFilter = document.getElementById("mediaTypeFilter");
 const themeToggleBtn = document.getElementById("themeToggleBtn");
+const adminImportProgressWrap = document.getElementById("adminImportProgressWrap");
+const adminImportProgressBar = document.getElementById("adminImportProgressBar");
+const adminImportProgressText = document.getElementById("adminImportProgressText");
 const tabButtons = Array.from(document.querySelectorAll(".admin-tab-btn"));
 const tabPanels = {
   users: document.getElementById("tab-users"),
@@ -33,6 +36,7 @@ const tabPanels = {
 };
 let mediaItems = [];
 let activeMediaItem = null;
+let adminImportProcessingTimer = null;
 
 function applyTheme(theme) {
   const next = theme === "dark" ? "dark" : "light";
@@ -229,6 +233,122 @@ async function api(path, options = {}) {
     throw new Error(detail);
   }
   return res.json();
+}
+
+function setAdminImportProgress(percent, text = "") {
+  if (!adminImportProgressWrap || !adminImportProgressBar || !adminImportProgressText) return;
+  const clamped = Math.max(0, Math.min(100, Number(percent) || 0));
+  adminImportProgressWrap.classList.remove("processing");
+  adminImportProgressWrap.classList.remove("hidden");
+  adminImportProgressBar.style.width = `${clamped}%`;
+  adminImportProgressText.textContent = text || `${Math.round(clamped)}%`;
+}
+
+function stopAdminImportProcessingTicker() {
+  if (!adminImportProcessingTimer) return;
+  clearInterval(adminImportProcessingTimer);
+  adminImportProcessingTimer = null;
+}
+
+function hideAdminImportProgress() {
+  if (!adminImportProgressWrap || !adminImportProgressBar || !adminImportProgressText) return;
+  stopAdminImportProcessingTicker();
+  adminImportProgressWrap.classList.add("hidden");
+  adminImportProgressWrap.classList.remove("processing");
+  adminImportProgressBar.style.width = "0%";
+  adminImportProgressText.textContent = "0%";
+}
+
+function estimateServerProcessingSeconds(file) {
+  const sizeMb = Math.max(1, Math.round((Number(file?.size || 0) / 1024 / 1024)));
+  const mime = String(file?.type || "").toLowerCase();
+  const name = String(file?.name || "").toLowerCase();
+  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/.test(name);
+  if (isAudio) {
+    return Math.max(10, Math.min(240, Math.round(sizeMb * 0.35 + 8)));
+  }
+  return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
+}
+
+function expectedStageFromProfile(profile = {}, transcoded = false) {
+  const hasVideo = String(profile.videoCodec || "none") !== "none";
+  if (!hasVideo) return "Saving";
+  return transcoded ? "Transcoding" : "Saving";
+}
+
+function startAdminImportProcessingTicker(estimatedSeconds = 0) {
+  if (!adminImportProgressWrap || !adminImportProgressBar || !adminImportProgressText) return;
+  if (adminImportProcessingTimer) return;
+  adminImportProgressWrap.classList.add("processing");
+  adminImportProgressWrap.classList.remove("hidden");
+  adminImportProgressBar.style.width = "100%";
+  const startedAt = Date.now();
+  const labels = ["Analyzing", "Transcoding", "Generating cover", "Saving"];
+  const phaseSpan = estimatedSeconds > 0
+    ? Math.max(8, Math.round(estimatedSeconds / labels.length))
+    : 12;
+  adminImportProcessingTimer = setInterval(() => {
+    const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    const phaseIndex = Math.min(labels.length - 1, Math.floor(sec / phaseSpan));
+    const phase = labels[phaseIndex];
+    if (estimatedSeconds > 0 && sec <= estimatedSeconds) {
+      const left = Math.max(0, estimatedSeconds - sec);
+      adminImportProgressText.textContent = `${phase} on server... ${sec}s elapsed, ~${left}s remaining`;
+    } else if (estimatedSeconds > 0) {
+      adminImportProgressText.textContent = `${phase} on server... ${sec}s elapsed (taking longer than estimate)`;
+    } else {
+      adminImportProgressText.textContent = `${phase} on server... ${sec}s`;
+    }
+  }, 900);
+}
+
+function xhrUpload(url, formData, onServerProcessingStart = null) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let processingStarted = false;
+    const uploadStartedAt = Date.now();
+    xhr.open("POST", url, true);
+    if (state.token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
+    }
+    xhr.timeout = 15 * 60 * 1000;
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable) {
+        const p = (ev.loaded / ev.total) * 100;
+        const elapsedSec = Math.max(1, (Date.now() - uploadStartedAt) / 1000);
+        const speedBps = ev.loaded / elapsedSec;
+        const remainBytes = Math.max(0, ev.total - ev.loaded);
+        const remainSec = speedBps > 0 ? Math.max(0, Math.round(remainBytes / speedBps)) : 0;
+        const etaText = ev.loaded > 1024 * 1024 ? `, ~${remainSec}s remaining` : ", estimating...";
+        setAdminImportProgress(
+          p,
+          `Uploading ${Math.round(p)}% (${Math.round(ev.loaded / 1024 / 1024)} / ${Math.round(ev.total / 1024 / 1024)} MB${etaText})`,
+        );
+        if (!processingStarted && p >= 100) {
+          processingStarted = true;
+          if (typeof onServerProcessingStart === "function") onServerProcessingStart();
+        }
+      } else {
+        setAdminImportProgress(0, "Uploading...");
+      }
+    };
+    xhr.onload = () => {
+      let data = null;
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data || {});
+      } else if (xhr.status === 401) {
+        reject(new Error("Session expired. Please login again."));
+      } else {
+        reject(new Error((data && data.detail) || `HTTP ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network unstable, please retry."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Network is too slow for this file, please retry on stable Wi-Fi."));
+    xhr.send(formData);
+  });
 }
 
 async function loadOverview() {
@@ -533,21 +653,37 @@ document.getElementById("importForm").onsubmit = async (e) => {
     return;
   }
   try {
+    hideAdminImportProgress();
+    setAdminImportProgress(0, "Preparing upload...");
+    const selectedFile = fileInput.files[0];
+    const estimatedSeconds = estimateServerProcessingSeconds(selectedFile);
     setImportMsg("Importing and transcoding...");
     const fd = new FormData();
-    fd.append("file", fileInput.files[0]);
+    fd.append("file", selectedFile);
     fd.append("media_type", typeSelect.value);
     if (coverInput.files && coverInput.files[0]) {
       fd.append("cover", coverInput.files[0]);
     }
-    const data = await api("/api/admin/import", { method: "POST", body: fd });
+    const data = await xhrUpload("/api/admin/import", fd, () => {
+      startAdminImportProcessingTicker(estimatedSeconds);
+      setImportMsg(`Upload finished. Server is processing/transcoding media (~${estimatedSeconds}s estimate), please wait...`);
+    });
+    stopAdminImportProcessingTicker();
+    const profile = data.profile || {};
+    const expectedStage = expectedStageFromProfile(profile, !!data.transcoded);
+    setAdminImportProgress(100, `Server processing complete (${expectedStage}). Finalizing...`);
     const mode = data.videoUrl ? "video/audio" : "audio-only";
-    setImportMsg(`Imported (${mode}). video=${data.videoUrl || "-"} audio=${data.audioUrl || "-"}`);
+    const transcodeText = data.transcoded ? "transcoded" : "direct import";
+    setImportMsg(
+      `Imported (${mode}, ${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
+    );
     fileInput.value = "";
     coverInput.value = "";
     await loadMedia();
     await loadOverview();
+    setTimeout(hideAdminImportProgress, 1200);
   } catch (err) {
+    hideAdminImportProgress();
     setImportMsg(formatImportError(err?.message), true);
   }
 };

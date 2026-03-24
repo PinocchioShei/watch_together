@@ -414,3 +414,16 @@
 - Improved import progress UX for large files:
   - upload stage now shows dynamic remaining-time estimate based on transfer speed,
   - post-upload server-processing stage now shows animated progress + elapsed/estimated remaining time with phase hints (analyze/transcode/cover/save).
+
+## 2026-03-24 13:41
+- Unified admin import UX with user import UX: admin import now uses XHR upload progress + live upload ETA + server-side processing phase ticker (elapsed + estimated remaining) instead of static text.
+- Fixed perceived "phase jumping" in processing messages: processing phase now advances progressively by estimated timeline buckets, rather than rapid cyclic text rotation.
+- Improved completion messaging for import in both admin/user: final progress text now includes expected final stage based on backend response profile/transcode flag.
+- Added startup+manual backfill for per-work `.meta.json` sidecar across existing library (`media/work/*`):
+  - new helper `backfill_work_meta` writes normalized JSON metadata for legacy works,
+  - startup lifespan now calls meta backfill after media layout migration,
+  - ensures old/new works share same extensible JSON metadata structure for future fields.
+
+## 2026-03-24 13:48
+- Added `update_log_zh.md` as a synchronized Chinese changelog companion to `update_log.md`.
+- Established bilingual logging rule: both logs should be updated together for future changes.

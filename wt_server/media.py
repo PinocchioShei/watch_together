@@ -147,6 +147,53 @@ def _write_work_meta(work_dir: Path, media_type: str, title: str = "") -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
+    MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
+    rows = conn.execute(
+        """
+        SELECT title, video_url, audio_url, media_type, updated_at
+        FROM media_assets
+        ORDER BY updated_at DESC
+        """
+    ).fetchall()
+
+    by_work: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        work_key = stem_from_media_url(row["video_url"] or row["audio_url"] or "")
+        if not work_key:
+            continue
+        if work_key not in by_work:
+            by_work[work_key] = {
+                "title": row["title"] or work_key,
+                "mediaType": row["media_type"] or _guess_media_type(row["title"] or work_key),
+                "updatedAt": row["updated_at"] or dt_to_str(now_utc()),
+            }
+
+    created = 0
+    updated = 0
+    for work_dir in MEDIA_WORK_SUBDIR.iterdir():
+        if not work_dir.is_dir():
+            continue
+        work_key = work_dir.name
+        meta_path = _work_meta_path(work_dir)
+        old_meta = _read_work_meta(work_dir)
+        src = by_work.get(work_key, {})
+        payload = {
+            "title": src.get("title") or old_meta.get("title") or work_key,
+            "mediaType": src.get("mediaType") or old_meta.get("mediaType") or _guess_media_type(work_key),
+            "updatedAt": src.get("updatedAt") or old_meta.get("updatedAt") or dt_to_str(now_utc()),
+        }
+        if meta_path.exists():
+            if old_meta != payload:
+                meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                updated += 1
+        else:
+            meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            created += 1
+
+    return {"created": created, "updated": updated}
+
+
 def _resolve_cover_url(work_key: str, row_cover_url: str = "") -> str:
     work_dir = MEDIA_WORK_SUBDIR / work_key
     if row_cover_url:

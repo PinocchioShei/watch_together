@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Admin</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260323q" />
+    <link rel="stylesheet" href="/static/admin.css?v=20260324c" />
   </head>
   <body>
     <div class="shell">
@@ -79,6 +79,12 @@
                 </select>
                 <p class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
                 <button type="submit">Import Video/Audio</button>
+                <div id="adminImportProgressWrap" class="import-progress hidden" aria-live="polite">
+                  <div class="import-progress-track">
+                    <div id="adminImportProgressBar" class="import-progress-bar"></div>
+                  </div>
+                  <div id="adminImportProgressText" class="import-progress-text">0%</div>
+                </div>
               </form>
               <p id="importMsg" class="msg"></p>
               <section class="media-library-block">
@@ -121,10 +127,10 @@
       </div>
 
       <footer class="app-footer">
-        <span>Frontend Build: 20260323r</span>
+        <span>Frontend Build: 20260324c</span>
       </footer>
     </div>
 
-    <script type="module" src="/static/admin.js?v=20260323r" defer></script>
+    <script type="module" src="/static/admin.js?v=20260324c" defer></script>
   </body>
   </html>

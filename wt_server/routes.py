@@ -20,6 +20,7 @@ from .auth import (
 )
 from .config import ADMIN_PASSWORD, ADMIN_USERNAME, MEDIA_DIR, RESOURCE_DIR, STATIC_DIR
 from .media import (
+    backfill_work_meta,
     collect_media_files,
     import_media_file,
     is_audio_media_url,
@@ -82,6 +83,7 @@ async def lifespan(_: FastAPI):
     conn = db_conn()
     try:
         migrate_media_layout(conn)
+        backfill_work_meta(conn)
     finally:
         conn.close()
     yield

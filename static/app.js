@@ -147,6 +147,12 @@ function estimateServerProcessingSeconds(file) {
   return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
 }
 
+function expectedStageFromProfile(profile = {}, transcoded = false) {
+  const hasVideo = String(profile.videoCodec || "none") !== "none";
+  if (!hasVideo) return "Saving";
+  return transcoded ? "Transcoding" : "Saving";
+}
+
 function startImportProcessingTicker(estimatedSeconds = 0) {
   if (!importProgressWrap || !importProgressBar || !importProgressText) return;
   if (importProcessingTimer) return;
@@ -155,18 +161,21 @@ function startImportProcessingTicker(estimatedSeconds = 0) {
   importProgressBar.style.width = "100%";
   const startedAt = Date.now();
   const labels = ["Analyzing", "Transcoding", "Generating cover", "Saving"];
-  let i = 0;
+  const phaseSpan = estimatedSeconds > 0
+    ? Math.max(8, Math.round(estimatedSeconds / labels.length))
+    : 12;
   importProcessingTimer = setInterval(() => {
     const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    const phaseIndex = Math.min(labels.length - 1, Math.floor(sec / phaseSpan));
+    const phase = labels[phaseIndex];
     if (estimatedSeconds > 0 && sec <= estimatedSeconds) {
       const left = Math.max(0, estimatedSeconds - sec);
-      importProgressText.textContent = `${labels[i % labels.length]} on server... ${sec}s elapsed, ~${left}s remaining`;
+      importProgressText.textContent = `${phase} on server... ${sec}s elapsed, ~${left}s remaining`;
     } else if (estimatedSeconds > 0) {
-      importProgressText.textContent = `${labels[i % labels.length]} on server... ${sec}s elapsed (taking longer than estimate)`;
+      importProgressText.textContent = `${phase} on server... ${sec}s elapsed (taking longer than estimate)`;
     } else {
-      importProgressText.textContent = `${labels[i % labels.length]} on server... ${sec}s`;
+      importProgressText.textContent = `${phase} on server... ${sec}s`;
     }
-    i += 1;
   }, 900);
 }
 
@@ -974,10 +983,11 @@ importForm.onsubmit = async (e) => {
       setLobbyStatus(`Upload finished. Server is processing/transcoding media (~${estimatedSeconds}s estimate), please wait...`);
     });
     stopImportProcessingTicker();
-    setImportProgress(100, "Server processing complete. Finalizing...");
+    const profile = upload.profile || {};
+    const expectedStage = expectedStageFromProfile(profile, !!upload.transcoded);
+    setImportProgress(100, `Server processing complete (${expectedStage}). Finalizing...`);
     videoFileInput.value = "";
     coverFileInput.value = "";
-    const profile = upload.profile || {};
     const modeText = upload.videoUrl ? "video/audio" : "audio-only";
     const transcodeText = upload.transcoded ? "transcoded" : "direct import";
     setMediaStatus(
