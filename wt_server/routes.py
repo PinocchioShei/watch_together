@@ -272,9 +272,15 @@ def create_app() -> FastAPI:
             items = list_media_library(conn)
         finally:
             conn.close()
+        visible_items = []
         for item in items:
             item["mediaKey"] = stem_from_media_url(item["videoUrl"] or item["audioUrl"])
-        return {"items": items}
+            if not item["mediaKey"]:
+                item["mediaKey"] = item.get("name", "")
+            if not item.get("videoUrl") and not item.get("audioUrl"):
+                continue
+            visible_items.append(item)
+        return {"items": visible_items}
 
     @app.get("/api/admin/rooms")
     async def admin_rooms(_: str = Depends(require_admin)):
@@ -353,6 +359,7 @@ def create_app() -> FastAPI:
                 file_meta = file_index.get(media_key)
                 if not file_meta:
                     raise HTTPException(status_code=404, detail="Media not found")
+                cover_url = file_meta.get("coverUrl") or f"/media/work/{media_key}/cover.jpg"
                 conn.execute(
                     """
                     INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
@@ -362,7 +369,7 @@ def create_app() -> FastAPI:
                         media_key,
                         file_meta.get("videoUrl") or "",
                         file_meta.get("audioUrl") or "",
-                        f"/media/work/{media_key}/cover.jpg",
+                        cover_url,
                         media_type,
                         0,
                         int(file_meta.get("size") or 0),
@@ -370,6 +377,20 @@ def create_app() -> FastAPI:
                         now_str,
                     ),
                 )
+
+            # Keep filesystem sidecar in sync for DB-less fallback items.
+            work_dir = MEDIA_DIR / "work" / media_key
+            if work_dir.exists() and work_dir.is_dir():
+                meta_path = work_dir / ".meta.json"
+                try:
+                    meta_payload = {
+                        "mediaType": media_type,
+                        "title": media_key,
+                        "updatedAt": now_str,
+                    }
+                    meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
             conn.commit()
             return {"ok": True, "mediaKey": media_key, "type": media_type}
         finally:

@@ -387,3 +387,30 @@
 - Media card list now filters by selected type on the client side, with empty-state hint when no cards match current filter.
 - Added sync-safe behavior for multi-user rooms: when remote sync switches to a media item outside local filter, frontend automatically switches filter to `all` so synced active media remains visible/trackable for every participant.
 - Bumped main frontend cache/build version for rollout (`styles.css/app.js` and footer build label -> `20260323c`).
+
+## 2026-03-24 00:04
+- Fixed media library fallback behavior for DB-missing works (`media/work/<work>/` only):
+  - fallback item type now reads from per-work `.meta.json` first (instead of title guess),
+  - fallback cover now validates `cover.jpg` existence and falls back to `/media/default_cover.jpg` when missing.
+- Added per-work sidecar metadata write on import (`.meta.json`) to persist selected `media_type` even for entries that may temporarily exist without DB row.
+- Updated admin media type patch endpoint to sync filesystem sidecar metadata (`.meta.json`) alongside DB update, keeping UI type stable for legacy/DB-less items.
+- Hardened admin media listing to avoid returning non-playable ghost rows (items with both empty `videoUrl` and `audioUrl`).
+- Repaired incident item `uise260305`: removed malformed DB/filesystem state so broken ghost card no longer appears; re-import should now persist selected type and produce valid cover fallback.
+
+## 2026-03-24 10:53
+- Added dual theme system (light/dark) for both user and admin pages with local, per-client preference persistence (no cross-user sync):
+  - light theme uses existing pink palette + `resource/day.jpg`,
+  - dark theme uses new night-compatible palette + `resource/night.jpg`.
+- Added live theme toggle controls in both pages and cache-bumped static assets for rollout.
+- Refined guest/cover-screen visual interactions:
+  - large title centered with stronger shadow,
+  - click-empty-area toggles login modal + blur,
+  - moved theme toggle to title-bottom long bar style on guest state,
+  - auto-hide toggle while login modal is open to avoid overlap.
+- Fixed lobby/login-stage layout polish:
+  - user lobby centering state separated from in-room state,
+  - footer build label stabilized to bottom-center on both pages (including guest/title state),
+  - admin login layout no longer stretches with large blank tail area.
+- Improved import progress UX for large files:
+  - upload stage now shows dynamic remaining-time estimate based on transfer speed,
+  - post-upload server-processing stage now shows animated progress + elapsed/estimated remaining time with phase hints (analyze/transcode/cover/save).

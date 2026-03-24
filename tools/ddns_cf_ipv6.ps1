@@ -18,12 +18,33 @@ if ([string]::IsNullOrWhiteSpace($cfg.api_token) -or [string]::IsNullOrWhiteSpac
 $ttl = if ($cfg.ttl) { [int]$cfg.ttl } else { 120 }
 $proxied = if ($null -ne $cfg.proxied) { [bool]$cfg.proxied } else { $false }
 
+function Test-IsPublicIPv6([string]$IpText) {
+    if ([string]::IsNullOrWhiteSpace($IpText)) {
+        return $false
+    }
+    try {
+        $ip = [System.Net.IPAddress]::Parse($IpText)
+    }
+    catch {
+        return $false
+    }
+    if ($ip.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetworkV6) {
+        return $false
+    }
+    # Global unicast IPv6 is 2000::/3 (usually starts with 2xxx or 3xxx).
+    if ($IpText -notmatch '^[23][0-9a-fA-F]{0,3}:') {
+        return $false
+    }
+    if ($IpText -like "fe80:*" -or $IpText -like "fc*" -or $IpText -like "fd*" -or $IpText -eq "::1") {
+        return $false
+    }
+    return $true
+}
+
 function Get-PublicIPv6 {
     $localPreferred = Get-NetIPAddress -AddressFamily IPv6 -ErrorAction SilentlyContinue |
         Where-Object {
-            $_.IPAddress -notlike "fe80:*" -and
-            $_.IPAddress -notlike "fc*" -and
-            $_.IPAddress -notlike "fd*" -and
+            (Test-IsPublicIPv6 $_.IPAddress) -and
             $_.AddressState -eq "Preferred" -and
             $_.ValidLifetime -gt 0 -and
             $_.InterfaceAlias -ne "Loopback Pseudo-Interface 1"
@@ -44,27 +65,12 @@ function Get-PublicIPv6 {
     foreach ($u in $candidates) {
         try {
             $text = (Invoke-RestMethod -Uri $u -TimeoutSec 8).ToString().Trim()
-            $ip = [System.Net.IPAddress]::Parse($text)
-            if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) {
+            if (Test-IsPublicIPv6 $text) {
                 return $text
             }
         }
         catch {
         }
-    }
-
-    $local = Get-NetIPAddress -AddressFamily IPv6 -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.IPAddress -notlike "fe80:*" -and
-            $_.IPAddress -notlike "fc*" -and
-            $_.IPAddress -notlike "fd*" -and
-            $_.InterfaceAlias -ne "Loopback Pseudo-Interface 1" -and
-            $_.ValidLifetime -gt 0
-        } |
-        Select-Object -First 1
-
-    if ($local) {
-        return $local.IPAddress
     }
 
     throw "Unable to determine a usable public IPv6 address"

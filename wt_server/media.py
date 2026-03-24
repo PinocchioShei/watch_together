@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import HTTPException, UploadFile
 
 from .config import (
+    BASE_DIR,
     ALLOWED_AUDIO_EXTENSIONS,
     ALLOWED_VIDEO_EXTENSIONS,
     MEDIA_AUDIO_DIR,
@@ -120,6 +121,45 @@ def _guess_media_type(title: str) -> str:
 
 def _default_cover_path() -> Path:
     return MEDIA_WORK_DIR / "default_cover.jpg"
+
+
+def _work_meta_path(work_dir: Path) -> Path:
+    return work_dir / ".meta.json"
+
+
+def _read_work_meta(work_dir: Path) -> dict[str, Any]:
+    path = _work_meta_path(work_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_work_meta(work_dir: Path, media_type: str, title: str = "") -> None:
+    path = _work_meta_path(work_dir)
+    payload = {
+        "mediaType": media_type,
+        "title": title or work_dir.name,
+        "updatedAt": dt_to_str(now_utc()),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _resolve_cover_url(work_key: str, row_cover_url: str = "") -> str:
+    work_dir = MEDIA_WORK_SUBDIR / work_key
+    if row_cover_url:
+        row_path = BASE_DIR / row_cover_url.lstrip("/")
+        if row_path.exists():
+            return row_cover_url
+    cover_file = work_dir / "cover.jpg"
+    if cover_file.exists():
+        return media_url_from_work(work_key, "cover.jpg")
+    default_cover = _default_cover_path()
+    if default_cover.exists():
+        return "/media/default_cover.jpg"
+    return ""
 
 
 def _ensure_default_cover() -> Path:
@@ -239,12 +279,15 @@ def collect_media_files() -> dict[str, dict[str, Any]]:
         stat_target = video_file or audio_file
         if not stat_target:
             continue
+        assert stat_target is not None
         stat = stat_target.stat()
         files[work_dir.name] = {
             "videoUrl": media_url_from_work(work_dir.name, video_file.name) if video_file else "",
             "audioUrl": media_url_from_work(work_dir.name, audio_file.name) if audio_file else "",
-            "size": video_file.stat().st_size if video_file else audio_file.stat().st_size,
+            "coverUrl": _resolve_cover_url(work_dir.name),
+            "size": stat.st_size,
             "updatedAt": dt_to_str(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
+            "meta": _read_work_meta(work_dir),
         }
     return files
 
@@ -275,8 +318,10 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "name": row["title"] or work_key,
                 "videoUrl": file_meta["videoUrl"],
                 "audioUrl": file_meta["audioUrl"] or row["audio_url"] or "",
-                "coverUrl": row["cover_url"] or media_url_from_work(work_key, "cover.jpg"),
-                "type": row["media_type"] or _guess_media_type(row["title"] or work_key),
+                "coverUrl": _resolve_cover_url(work_key, row["cover_url"] or ""),
+                "type": (file_meta.get("meta", {}) or {}).get("mediaType")
+                or row["media_type"]
+                or _guess_media_type(row["title"] or work_key),
                 "duration": row["duration"] or 0,
                 "size": file_meta["size"],
                 "updatedAt": file_meta["updatedAt"],
@@ -292,8 +337,8 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "name": stem,
                 "videoUrl": file_meta["videoUrl"],
                 "audioUrl": file_meta["audioUrl"],
-                "coverUrl": media_url_from_work(stem, "cover.jpg"),
-                "type": _guess_media_type(stem),
+                "coverUrl": file_meta.get("coverUrl") or _resolve_cover_url(stem),
+                "type": (file_meta.get("meta", {}) or {}).get("mediaType") or _guess_media_type(stem),
                 "duration": 0,
                 "size": file_meta["size"],
                 "updatedAt": file_meta["updatedAt"],
@@ -611,6 +656,8 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
     except HTTPException:
         shutil.rmtree(work_dir, ignore_errors=True)
         raise
+
+    _write_work_meta(work_dir, media_type, title=media_stem)
 
     title = media_stem
     now_str = dt_to_str(now_utc())

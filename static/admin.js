@@ -4,6 +4,7 @@ const state = {
   token: sessionStorage.getItem("wt_admin_token") || "",
 };
 let guestAuthOpen = false;
+const THEME_KEY = "wt_admin_theme";
 
 const loginCard = document.getElementById("loginCard");
 const dashboard = document.getElementById("dashboard");
@@ -23,6 +24,7 @@ const mediaDetailType = document.getElementById("mediaDetailType");
 const mediaDetailRename = document.getElementById("mediaDetailRename");
 const mediaDetailDelete = document.getElementById("mediaDetailDelete");
 const mediaTypeFilter = document.getElementById("mediaTypeFilter");
+const themeToggleBtn = document.getElementById("themeToggleBtn");
 const tabButtons = Array.from(document.querySelectorAll(".admin-tab-btn"));
 const tabPanels = {
   users: document.getElementById("tab-users"),
@@ -31,6 +33,30 @@ const tabPanels = {
 };
 let mediaItems = [];
 let activeMediaItem = null;
+
+function applyTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  if (themeToggleBtn) {
+    themeToggleBtn.textContent = next === "dark" ? "Light" : "Dark";
+  }
+}
+
+function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  applyTheme(saved === "dark" ? "dark" : "light");
+}
+
+if (themeToggleBtn) {
+  themeToggleBtn.onclick = () => {
+    const now = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    const next = now === "dark" ? "light" : "dark";
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  };
+}
+
+initTheme();
 
 function setLoginMsg(msg, err = false) {
   loginMsg.textContent = msg || "";
@@ -79,6 +105,18 @@ function formatImportError(detail) {
     return `Import failed during ffmpeg processing. ${msg}`;
   }
   return `Import failed: ${msg}`;
+}
+
+function normalizeMediaType(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "movie";
+  const lower = raw.toLowerCase();
+  if (lower === "rj") return "RJ";
+  if (lower === "asmr") return "ASMR";
+  if (lower === "music") return "music";
+  if (lower === "shot") return "shot";
+  if (lower === "movie") return "movie";
+  return raw;
 }
 
 function parseWorkPath(url) {
@@ -241,7 +279,7 @@ async function loadMedia() {
   const selectedType = mediaTypeFilter ? (mediaTypeFilter.value || "movie") : "movie";
   const visible = selectedType === "all"
     ? rows
-    : rows.filter((m) => String(m.type || "movie") === selectedType);
+    : rows.filter((m) => normalizeMediaType(m.type) === selectedType);
   mediaItems = visible;
   let html = "<div class=\"media-card-grid\">";
   visible.forEach((m, idx) => {
@@ -308,7 +346,7 @@ async function loadMedia() {
       if (!item) return;
       const mediaKey = item.mediaKey || "";
       if (!mediaKey) return;
-      const current = String(item.type || "movie");
+      const current = normalizeMediaType(item.type || "movie");
       const next = prompt("Set media type (movie/RJ/ASMR/music/shot):", current);
       if (!next) return;
       const value = next.trim();

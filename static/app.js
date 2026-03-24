@@ -35,6 +35,7 @@ const state = {
 
 const tabId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 const { startTabLock, stopTabLock } = createTabLock(tabId);
+const THEME_KEY = "wt_theme";
 
 const authPanel = document.getElementById("authPanel");
 const appPanel = document.getElementById("appPanel");
@@ -44,6 +45,7 @@ const tabRegister = document.getElementById("tabRegister");
 const loginForm = document.getElementById("loginForm");
 const registerForm = document.getElementById("registerForm");
 const authMsg = document.getElementById("authMsg");
+const themeToggleBtn = document.getElementById("themeToggleBtn");
 const roomList = document.getElementById("roomList");
 const createRoomForm = document.getElementById("createRoomForm");
 const refreshRoomsBtn = document.getElementById("refreshRooms");
@@ -82,8 +84,33 @@ let loadRooms = async () => [];
 let tryRestoreRoom = async () => {};
 let importInFlight = false;
 let guestAuthOpen = false;
+let importProcessingTimer = null;
 
 window.addEventListener("beforeunload", stopTabLock);
+
+function applyTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  if (themeToggleBtn) {
+    themeToggleBtn.textContent = next === "dark" ? "Light" : "Dark";
+  }
+}
+
+function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  applyTheme(saved === "dark" ? "dark" : "light");
+}
+
+if (themeToggleBtn) {
+  themeToggleBtn.onclick = () => {
+    const now = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    const next = now === "dark" ? "light" : "dark";
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  };
+}
+
+initTheme();
 
 function setMessage(msg, isError = false) {
   authMsg.textContent = msg || "";
@@ -103,21 +130,66 @@ function setMediaStatus(msg, isError = false) {
 function setImportProgress(percent, text = "") {
   if (!importProgressWrap || !importProgressBar || !importProgressText) return;
   const clamped = Math.max(0, Math.min(100, Number(percent) || 0));
+  importProgressWrap.classList.remove("processing");
   importProgressWrap.classList.remove("hidden");
   importProgressBar.style.width = `${clamped}%`;
   importProgressText.textContent = text || `${Math.round(clamped)}%`;
 }
 
+function estimateServerProcessingSeconds(file) {
+  const sizeMb = Math.max(1, Math.round((Number(file?.size || 0) / 1024 / 1024)));
+  const mime = String(file?.type || "").toLowerCase();
+  const name = String(file?.name || "").toLowerCase();
+  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/.test(name);
+  if (isAudio) {
+    return Math.max(10, Math.min(240, Math.round(sizeMb * 0.35 + 8)));
+  }
+  return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
+}
+
+function startImportProcessingTicker(estimatedSeconds = 0) {
+  if (!importProgressWrap || !importProgressBar || !importProgressText) return;
+  if (importProcessingTimer) return;
+  importProgressWrap.classList.add("processing");
+  importProgressWrap.classList.remove("hidden");
+  importProgressBar.style.width = "100%";
+  const startedAt = Date.now();
+  const labels = ["Analyzing", "Transcoding", "Generating cover", "Saving"];
+  let i = 0;
+  importProcessingTimer = setInterval(() => {
+    const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    if (estimatedSeconds > 0 && sec <= estimatedSeconds) {
+      const left = Math.max(0, estimatedSeconds - sec);
+      importProgressText.textContent = `${labels[i % labels.length]} on server... ${sec}s elapsed, ~${left}s remaining`;
+    } else if (estimatedSeconds > 0) {
+      importProgressText.textContent = `${labels[i % labels.length]} on server... ${sec}s elapsed (taking longer than estimate)`;
+    } else {
+      importProgressText.textContent = `${labels[i % labels.length]} on server... ${sec}s`;
+    }
+    i += 1;
+  }, 900);
+}
+
+function stopImportProcessingTicker() {
+  if (!importProcessingTimer) return;
+  clearInterval(importProcessingTimer);
+  importProcessingTimer = null;
+}
+
 function hideImportProgress() {
   if (!importProgressWrap || !importProgressBar || !importProgressText) return;
+  stopImportProcessingTicker();
   importProgressWrap.classList.add("hidden");
+  importProgressWrap.classList.remove("processing");
   importProgressBar.style.width = "0%";
   importProgressText.textContent = "0%";
 }
 
-function xhrUpload(url, formData) {
+function xhrUpload(url, formData, onServerProcessingStart = null) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let processingStarted = false;
+    const uploadStartedAt = Date.now();
     xhr.open("POST", url, true);
     if (state.token) {
       xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
@@ -126,7 +198,19 @@ function xhrUpload(url, formData) {
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable) {
         const p = (ev.loaded / ev.total) * 100;
-        setImportProgress(p, `Uploading ${Math.round(p)}% (${Math.round(ev.loaded / 1024 / 1024)} / ${Math.round(ev.total / 1024 / 1024)} MB)`);
+        const elapsedSec = Math.max(1, (Date.now() - uploadStartedAt) / 1000);
+        const speedBps = ev.loaded / elapsedSec;
+        const remainBytes = Math.max(0, ev.total - ev.loaded);
+        const remainSec = speedBps > 0 ? Math.max(0, Math.round(remainBytes / speedBps)) : 0;
+        const etaText = ev.loaded > 1024 * 1024 ? `, ~${remainSec}s remaining` : ", estimating...";
+        setImportProgress(
+          p,
+          `Uploading ${Math.round(p)}% (${Math.round(ev.loaded / 1024 / 1024)} / ${Math.round(ev.total / 1024 / 1024)} MB${etaText})`,
+        );
+        if (!processingStarted && p >= 100) {
+          processingStarted = true;
+          if (typeof onServerProcessingStart === "function") onServerProcessingStart();
+        }
       } else {
         setImportProgress(0, "Uploading...");
       }
@@ -265,6 +349,18 @@ function resolveMediaUrlForMode(item, mode) {
   return item.videoUrl || "";
 }
 
+function normalizeMediaType(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "movie";
+  const lower = raw.toLowerCase();
+  if (lower === "rj") return "RJ";
+  if (lower === "asmr") return "ASMR";
+  if (lower === "music") return "music";
+  if (lower === "shot") return "shot";
+  if (lower === "movie") return "movie";
+  return raw;
+}
+
 function getRoomMediaFilterType() {
   return roomMediaTypeFilter ? (roomMediaTypeFilter.value || "movie") : "movie";
 }
@@ -272,7 +368,7 @@ function getRoomMediaFilterType() {
 function getVisibleMediaItems() {
   const selectedType = getRoomMediaFilterType();
   if (selectedType === "all") return state.mediaLibrary;
-  return state.mediaLibrary.filter((item) => String(item.type || "movie") === selectedType);
+  return state.mediaLibrary.filter((item) => normalizeMediaType(item.type) === selectedType);
 }
 
 function ensureFilterShowsActiveItem(source = "") {
@@ -285,7 +381,7 @@ function ensureFilterShowsActiveItem(source = "") {
   );
   if (!active) return;
   const activeType = String(active.type || "movie");
-  if (activeType !== selectedType) {
+  if (normalizeMediaType(activeType) !== selectedType) {
     roomMediaTypeFilter.value = "all";
     if (source === "remote") {
       setMediaStatus("Synced media is outside current filter; switched filter to all.");
@@ -865,13 +961,20 @@ importForm.onsubmit = async (e) => {
     setMediaStatus("Importing media into library...");
     setLobbyStatus("Importing media into library...");
     const fd = new FormData();
-    fd.append("file", videoFileInput.files[0]);
+    const selectedFile = videoFileInput.files[0];
+    const estimatedSeconds = estimateServerProcessingSeconds(selectedFile);
+    fd.append("file", selectedFile);
     fd.append("media_type", importTypeSelect.value);
     if (coverFileInput.files && coverFileInput.files[0]) {
       fd.append("cover", coverFileInput.files[0]);
     }
-    const upload = await xhrUpload("/api/upload-video", fd);
-    setImportProgress(100, "Upload complete, processing media...");
+    const upload = await xhrUpload("/api/upload-video", fd, () => {
+      startImportProcessingTicker(estimatedSeconds);
+      setMediaStatus(`Upload finished. Server is processing/transcoding media (~${estimatedSeconds}s estimate), please wait...`);
+      setLobbyStatus(`Upload finished. Server is processing/transcoding media (~${estimatedSeconds}s estimate), please wait...`);
+    });
+    stopImportProcessingTicker();
+    setImportProgress(100, "Server processing complete. Finalizing...");
     videoFileInput.value = "";
     coverFileInput.value = "";
     const profile = upload.profile || {};
