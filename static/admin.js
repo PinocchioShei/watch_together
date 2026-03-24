@@ -37,6 +37,7 @@ const tabPanels = {
 let mediaItems = [];
 let activeMediaItem = null;
 let adminImportProcessingTimer = null;
+let selectedImportFileStamp = "";
 
 function applyTheme(theme) {
   const next = theme === "dark" ? "dark" : "light";
@@ -88,7 +89,7 @@ function formatImportError(detail) {
     return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a.";
   }
   if (lower.includes("file too large")) {
-    return "Import failed: file too large (max 1GB).";
+    return "Import failed: file too large (max 1.5GB).";
   }
   if (lower.includes("upload timed out") || lower.includes("network unstable")) {
     return "Import failed: upload connection timed out. Large files need a stable network (prefer Wi-Fi).";
@@ -270,6 +271,11 @@ function estimateServerProcessingSeconds(file) {
   return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
 }
 
+function importFileStamp(file) {
+  if (!file) return "";
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
+
 function expectedStageFromProfile(profile = {}, transcoded = false) {
   const hasVideo = String(profile.videoCodec || "none") !== "none";
   if (!hasVideo) return "Saving";
@@ -348,6 +354,14 @@ function xhrUpload(url, formData, onServerProcessingStart = null) {
     xhr.onerror = () => reject(new Error("Network unstable, please retry."));
     xhr.ontimeout = () => reject(new Error("Upload timed out. Network is too slow for this file, please retry on stable Wi-Fi."));
     xhr.send(formData);
+  });
+}
+
+const adminImportFileInput = document.getElementById("importFile");
+if (adminImportFileInput) {
+  adminImportFileInput.addEventListener("change", () => {
+    const file = adminImportFileInput.files && adminImportFileInput.files[0] ? adminImportFileInput.files[0] : null;
+    selectedImportFileStamp = importFileStamp(file);
   });
 }
 
@@ -444,7 +458,8 @@ async function loadMedia() {
       const item = activeMediaItem;
       if (!item) return;
       const mediaKey = item.mediaKey || "";
-      const nextName = prompt("New work folder name:");
+      const currentWork = mediaKey || item.name || "";
+      const nextName = prompt("New work folder name:", currentWork);
       if (!nextName || !nextName.trim()) return;
       try {
         await api(`/api/admin/media/${encodeURIComponent(mediaKey)}`, {
@@ -656,6 +671,11 @@ document.getElementById("importForm").onsubmit = async (e) => {
     hideAdminImportProgress();
     setAdminImportProgress(0, "Preparing upload...");
     const selectedFile = fileInput.files[0];
+    const currentStamp = importFileStamp(selectedFile);
+    if (selectedImportFileStamp && currentStamp !== selectedImportFileStamp) {
+      setImportMsg("Selected file changed during upload preparation. Please submit again.", true);
+      return;
+    }
     const estimatedSeconds = estimateServerProcessingSeconds(selectedFile);
     setImportMsg("Importing and transcoding...");
     const fd = new FormData();

@@ -427,3 +427,13 @@
 ## 2026-03-24 13:48
 - Added `update_log_zh.md` as a synchronized Chinese changelog companion to `update_log.md`.
 - Established bilingual logging rule: both logs should be updated together for future changes.
+
+## 2026-03-24 18:43
+- Increased upload size limit from 1GB to 1.5GB in backend import pipeline (`wt_server/media.py`) and synced frontend error hints for both user/admin pages.
+- Added anti-duplicate upload guard (file fingerprint based on name/size/lastModified) to reduce accidental repeated submissions that created unexpected `_2` work suffixes.
+- Refined import progress phase messaging for user/admin: processing stage now advances linearly by estimated timeline buckets (no rapid cyclic phase bouncing).
+- Updated admin guest-mode footer behavior: build label is now fixed at bottom-center with proper z-index so mobile title-screen controls no longer overlap it.
+
+## 2026-03-24 19:24
+- Fixed admin footer version-label positioning mismatch root cause: admin page was still referencing stale stylesheet query version (`admin.css?v=20260324c`) while script/build tags were newer, so latest footer positioning CSS was not loaded.
+- Updated admin stylesheet reference to current version (`admin.css?v=20260324j`) to align with latest layout fixes.

@@ -85,6 +85,7 @@ let tryRestoreRoom = async () => {};
 let importInFlight = false;
 let guestAuthOpen = false;
 let importProcessingTimer = null;
+let selectedImportFileStamp = "";
 
 window.addEventListener("beforeunload", stopTabLock);
 
@@ -147,6 +148,11 @@ function estimateServerProcessingSeconds(file) {
   return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
 }
 
+function importFileStamp(file) {
+  if (!file) return "";
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
+
 function expectedStageFromProfile(profile = {}, transcoded = false) {
   const hasVideo = String(profile.videoCodec || "none") !== "none";
   if (!hasVideo) return "Saving";
@@ -183,6 +189,13 @@ function stopImportProcessingTicker() {
   if (!importProcessingTimer) return;
   clearInterval(importProcessingTimer);
   importProcessingTimer = null;
+}
+
+if (videoFileInput) {
+  videoFileInput.addEventListener("change", () => {
+    const file = videoFileInput.files && videoFileInput.files[0] ? videoFileInput.files[0] : null;
+    selectedImportFileStamp = importFileStamp(file);
+  });
 }
 
 function hideImportProgress() {
@@ -254,7 +267,7 @@ function formatImportError(detail) {
     return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a.";
   }
   if (lower.includes("file too large")) {
-    return "Import failed: file too large (max 1GB).";
+    return "Import failed: file too large (max 1.5GB).";
   }
   if (lower.includes("upload timed out") || lower.includes("network unstable")) {
     return "Import failed: upload connection timed out. Large files need a stable network (prefer Wi-Fi).";
@@ -971,6 +984,12 @@ importForm.onsubmit = async (e) => {
     setLobbyStatus("Importing media into library...");
     const fd = new FormData();
     const selectedFile = videoFileInput.files[0];
+    const currentStamp = importFileStamp(selectedFile);
+    if (selectedImportFileStamp && currentStamp !== selectedImportFileStamp) {
+      setMediaStatus("Selected file changed during upload preparation. Please submit again.", true);
+      setLobbyStatus("Selected file changed during upload preparation. Please submit again.", true);
+      return;
+    }
     const estimatedSeconds = estimateServerProcessingSeconds(selectedFile);
     fd.append("file", selectedFile);
     fd.append("media_type", importTypeSelect.value);

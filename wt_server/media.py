@@ -323,17 +323,21 @@ def collect_media_files() -> dict[str, dict[str, Any]]:
         audio_file = _find_first_media_file(work_dir, ALLOWED_AUDIO_EXTENSIONS, "audio")
         if not video_file and not audio_file:
             continue
-        stat_target = video_file or audio_file
-        if not stat_target:
+        stat_candidates = [p for p in work_dir.iterdir() if p.is_file()]
+        if not stat_candidates:
             continue
-        assert stat_target is not None
-        stat = stat_target.stat()
+        latest_mtime = max(p.stat().st_mtime for p in stat_candidates)
+        stat_size_target = video_file or audio_file
+        if not stat_size_target:
+            continue
+        assert stat_size_target is not None
+        stat_size = stat_size_target.stat().st_size
         files[work_dir.name] = {
             "videoUrl": media_url_from_work(work_dir.name, video_file.name) if video_file else "",
             "audioUrl": media_url_from_work(work_dir.name, audio_file.name) if audio_file else "",
             "coverUrl": _resolve_cover_url(work_dir.name),
-            "size": stat.st_size,
-            "updatedAt": dt_to_str(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
+            "size": stat_size,
+            "updatedAt": dt_to_str(datetime.fromtimestamp(latest_mtime, timezone.utc)),
             "meta": _read_work_meta(work_dir),
         }
     return files
@@ -587,7 +591,7 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
     raw_name = f"raw_{media_stem}_{secrets.token_hex(4)}{suffix}"
     raw_path = MEDIA_TMP_DIR / raw_name
 
-    max_size = 1024 * 1024 * 1024
+    max_size = int(1.5 * 1024 * 1024 * 1024)
     size = 0
     with raw_path.open("wb") as out:
         while True:
@@ -598,7 +602,7 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
             if size > max_size:
                 out.close()
                 raw_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=413, detail="File too large, max 1GB")
+                raise HTTPException(status_code=413, detail="File too large, max 1.5GB")
             out.write(chunk)
     await file.close()
 

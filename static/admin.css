@@ -105,12 +105,19 @@ body.guest-auth-open::after {
 }
 
 .app-footer {
-  margin-top: 14px;
+  margin-top: 0;
   text-align: center;
   color: #9b6a91;
   font-size: 12px;
   letter-spacing: 0.3px;
-  align-self: end;
+  position: fixed;
+  left: 0;
+  width: 100vw;
+  right: auto;
+  bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  z-index: 9;
+  pointer-events: none;
+  transform: none;
 }
 
 :root[data-theme="dark"] .app-footer {
@@ -745,6 +752,11 @@ th { color: var(--muted); }
   }
   .admin-tab-btn {
     text-align: center;
+  }
+  .app-footer {
+    left: 0;
+    width: 100vw;
+    bottom: max(8px, env(safe-area-inset-bottom, 0px));
   }
   body.login-mode .shell {
     align-content: start;
