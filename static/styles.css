@@ -460,6 +460,13 @@ button.danger:hover {
   max-width: 100%;
 }
 
+@media (min-width: 961px) {
+  .media-list button.media-card {
+    width: min(100%, 188px);
+    justify-self: center;
+  }
+}
+
 :root[data-theme="dark"] .media-list button.media-card {
   background: rgba(37, 31, 57, 0.84);
   border: 1px solid rgba(125, 109, 177, 0.54);

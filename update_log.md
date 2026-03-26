@@ -480,3 +480,53 @@
 - Adjusted media library card layout for responsive behavior: cards now adapt to container width with single-column full-width layout (`1 per row`) to avoid cards becoming too small on mobile.
 - Removed fixed compact card width cap and made media cards fill available column width.
 - Bumped user static versions for cache refresh (`styles.css?v=20260326f`, `app.js?v=20260326f`, footer build `20260326f`).
+
+## 2026-03-26 10:27
+- Fixed room playback reset issue triggered by member join/leave presence updates.
+- Root cause: on some clients, non-user-triggered media events (caused by remote state apply / element source updates during peer presence changes) could still enter local playback sync path and send takeover sync packets with near-zero time.
+- Added frontend guard in `onLocalPlaybackAction` to ignore untrusted playback events (`event.isTrusted === false`), preventing accidental sync resets when room membership changes.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326g`, `app.js?v=20260326g`, footer build `20260326g`).
+
+## 2026-03-26 10:38
+- Further hardened room sync for leave/refresh edge cases:
+  - Added user-gesture freshness gate on local playback sync trigger (`~1.8s` window) to block delayed/non-intentional local takeover packets that could still reset timeline when peers disconnect/reconnect.
+  - Added backend presence-state rebroadcast (`system-presence-sync`) on member connect and on non-controller disconnect to keep all clients converged to latest room media source and time.
+- This also improves the issue where some joiners occasionally failed to receive active media source while room was already playing.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326h`, `app.js?v=20260326h`, footer build `20260326h`).
+
+## 2026-03-26 10:52
+- Rolled back the client-side "gesture freshness" gate because it introduced missed legitimate sync actions in some normal operation paths.
+- Added server-side hardening for empty-media sync packets in room state updates:
+  - when incoming sync has empty `videoUrl` but room state already has a valid media URL, backend now auto-fills media URL from current room state before persisting/broadcasting,
+  - prevents disconnect/refresh side-effects from wiping media source and forcing timeline resets.
+- This directly targets the remaining leave/refresh reset issue while preserving normal sync responsiveness.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326i`, `app.js?v=20260326i`, footer build `20260326i`).
+
+## 2026-03-26 11:08
+- Root-cause-oriented client fix for refresh/leave timeline reset:
+  - identified that delayed trusted media events emitted right after remote state application could still trigger local takeover sync,
+  - added a short local sync block window (`blockLocalSyncUntil`) immediately after remote state apply, so post-apply transient media events cannot send new local sync packets.
+- Kept explicit user actions responsive by clearing the block window when selecting media from library.
+- This avoids false local `forceTakeover` packets (often with near-zero time) during member refresh/leave while not adding broad server-side time clamps.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326j`, `app.js?v=20260326j`, footer build `20260326j`).
+
+## 2026-03-26 11:20
+- Analyzed latest sync logs and fixed the remaining reset trigger in remote state application timing:
+  - root cause found: when source changed, client sometimes applied `currentTime/isPlaying` before media metadata was ready, then browser emitted follow-up playback events that re-entered local sync path and generated zero-time takeover packets.
+- Refactored `applyRemoteState` flow in `static/app.js`:
+  - after source switch, wait for `loadedmetadata/canplay` (with timeout fallback) before applying seek/play/pause,
+  - use tighter drift threshold and centralized finalization to reduce transient re-seek/auto-play races.
+- This directly targets refresh/leave-induced timeline resets without introducing server-side clamping logic.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326k`, `app.js?v=20260326k`, footer build `20260326k`).
+
+## 2026-03-26 11:33
+- Further root-cause fix from latest logs: encoded-vs-decoded media URL mismatch still caused false source-change detection on remote sync apply, which could retrigger media reload and produce reset-like behavior during reconnect/leave scenarios.
+- Added canonical media path comparison in `static/app.js` (`decodeURIComponent`-normalized path key) and switched source-change/media-match checks to canonical path equality instead of raw URL string.
+- UI adjustment: narrowed room left media column width to keep library cards visually compact on desktop while preserving the mobile single-column full-width card behavior.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326l`, `app.js?v=20260326l`, footer build `20260326l`).
+
+## 2026-03-26 11:45
+- Reverted websocket disconnect-time presence state rebroadcast in backend (`routes.py` finally-block): this rebroadcast was confirmed to interfere with active playback sessions and could induce timeline jumps/reset-like behavior during member refresh/leave churn.
+- Keep only member list broadcast on disconnect, and let authoritative playback state continue from normal sync stream.
+- UI correction per request: desktop media library cards now stay compact and visually smaller while mobile keeps single-column full-width adaptive behavior.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326m`, `app.js?v=20260326m`, footer build `20260326m`).

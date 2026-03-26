@@ -986,6 +986,20 @@ def create_app() -> FastAPI:
                     }
                 )
             )
+            await hub.broadcast(
+                room_id,
+                {
+                    "type": "state",
+                    "videoUrl": initial_video_url,
+                    "playMode": initial_play_mode,
+                    "currentTime": state["current_time_sec"] if state else 0,
+                    "isPlaying": bool(state["is_playing"]) if state else False,
+                    "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
+                    "controllerUserId": initial_controller,
+                    "actionId": 0,
+                    "by": "system-presence-sync",
+                },
+            )
             sync_log(
                 "ws_initial_state",
                 roomId=room_id,
@@ -1036,12 +1050,29 @@ def create_app() -> FastAPI:
                     should_broadcast_state = False
                     try:
                         latest_state = up_conn.execute(
-                            "SELECT controller_user_id FROM room_state WHERE room_id = ?",
+                            "SELECT controller_user_id, video_url, current_time, is_playing FROM room_state WHERE room_id = ?",
                             (room_id,),
                         ).fetchone()
                         active_controller = (
                             latest_state["controller_user_id"] if latest_state else None
                         )
+                        existing_video_url = normalize_media_url(
+                            (latest_state["video_url"] if latest_state else "") or ""
+                        )
+                        if not video_url and existing_video_url:
+                            video_url = existing_video_url
+                            play_mode = (
+                                "audio" if is_audio_media_url(video_url) else "video"
+                            )
+                            sync_log(
+                                "ws_sync_fill_empty_video_from_state",
+                                roomId=room_id,
+                                userId=user.id,
+                                actionId=action_id,
+                                filledVideoUrl=video_url,
+                                currentTime=current_time,
+                                isPlaying=is_playing,
+                            )
                         if active_controller is not None and not await hub.has_user(
                             room_id, int(active_controller)
                         ):
@@ -1197,46 +1228,6 @@ def create_app() -> FastAPI:
             pass
         finally:
             await hub.remove(room_id, websocket)
-            # 控制者掉线后，快速释放控制权，避免房间状态长期冻结。
-            cleanup_conn = db_conn()
-            try:
-                row = cleanup_conn.execute(
-                    "SELECT video_url, current_time AS current_time_sec, is_playing, controller_user_id FROM room_state WHERE room_id = ?",
-                    (room_id,),
-                ).fetchone()
-                if (
-                    row
-                    and row["controller_user_id"] == user.id
-                    and not await hub.has_user(room_id, user.id)
-                ):
-                    cleanup_conn.execute(
-                        "UPDATE room_state SET controller_user_id = NULL, updated_at = ? WHERE room_id = ?",
-                        (dt_to_str(now_utc()), room_id),
-                    )
-                    cleanup_conn.commit()
-                    normalized_url = normalize_media_url(row["video_url"] or "")
-                    safe_url = (
-                        normalized_url if is_valid_media_url(normalized_url) else ""
-                    )
-                    await hub.broadcast(
-                        room_id,
-                        {
-                            "type": "state",
-                            "videoUrl": safe_url,
-                            "playMode": "audio"
-                            if is_audio_media_url(safe_url)
-                            else "video",
-                            "currentTime": safe_float(row["current_time_sec"], 0.0),
-                            "isPlaying": bool(row["is_playing"]),
-                            "updatedAt": dt_to_str(now_utc()),
-                            "controllerUserId": None,
-                            "actionId": 0,
-                            "by": "system-controller-release",
-                        },
-                    )
-            finally:
-                cleanup_conn.close()
-
             await broadcast_room_members(room_id)
 
     return app

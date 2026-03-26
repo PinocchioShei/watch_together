@@ -21,6 +21,7 @@ const state = {
   activeMediaUrl: "",
   activeMediaId: null,
   lastSyncedMediaPath: "",
+  blockLocalSyncUntil: 0,
   playMode: "video",
   localActionCounter: 0,
   lastLocalActionId: 0,
@@ -104,6 +105,16 @@ function syncDebug(event, fields = {}) {
   try {
     console.info("[WT_SYNC]", payload);
   } catch {
+  }
+}
+
+function canonicalMediaPath(url) {
+  const path = toMediaPath(url);
+  if (!path) return "";
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
   }
 }
 
@@ -542,6 +553,7 @@ function renderMediaLibrary() {
       if (!playable) return;
       state.forceTakeover = true;
       state.localOverrideUntil = Date.now() + 1200;
+      state.blockLocalSyncUntil = 0;
       state.activeMediaId = item.id || null;
       state.activeMediaUrl = modeUrl;
       state.lastSyncedMediaPath = toMediaPath(modeUrl) || state.lastSyncedMediaPath;
@@ -886,6 +898,7 @@ function applyRemoteState(data, by) {
   }
 
   state.suppressVideoEvents = true;
+  state.blockLocalSyncUntil = Date.now() + 1200;
 
   if (Object.prototype.hasOwnProperty.call(data, "controllerUserId")) {
     state.controllerUserId = data.controllerUserId;
@@ -896,25 +909,31 @@ function applyRemoteState(data, by) {
   }
 
   const incomingUrl = normalizeUrl(data.videoUrl || "");
+  const incomingPathKey = canonicalMediaPath(data.videoUrl || "");
   const incomingMediaPath = toMediaPath(data.videoUrl || "") || "";
   if (incomingMediaPath) {
     state.lastSyncedMediaPath = incomingMediaPath;
   }
   const player = getActivePlayer();
+  const desiredTime = Number(data.currentTime || 0);
+  const desiredPlaying = !!data.isPlaying;
   if (!incomingUrl) {
     state.activeMediaUrl = "";
     state.activeMediaId = null;
     renderMediaLibrary();
   }
   const currentUrl = normalizeUrl(player.getAttribute("src") || player.currentSrc || "");
-  if (incomingUrl && currentUrl !== incomingUrl) {
+  const currentPathKey = canonicalMediaPath(player.getAttribute("src") || player.currentSrc || "");
+  let sourceChanged = false;
+  if (incomingUrl && currentUrl !== incomingUrl && incomingPathKey !== currentPathKey) {
     state.activeMediaUrl = data.videoUrl;
     const media = state.mediaLibrary.find((item) => {
       const modeUrl = resolveMediaUrlForMode(item, state.playMode);
-      return normalizeUrl(modeUrl) === incomingUrl;
+      return canonicalMediaPath(modeUrl) === incomingPathKey;
     });
     state.activeMediaId = media?.id || null;
     player.src = incomingUrl;
+    sourceChanged = true;
     ensureFilterShowsActiveItem("remote");
     renderMediaLibrary();
   }
@@ -930,34 +949,55 @@ function applyRemoteState(data, by) {
     controllerUserId: data.controllerUserId,
   });
 
-  const drift = Math.abs((player.currentTime || 0) - (data.currentTime || 0));
-  let jumpedBySeek = false;
-  if (drift > 1.2) {
-    jumpedBySeek = true;
-    player.currentTime = data.currentTime || 0;
-  }
-
-  if (data.isPlaying) {
-    const ensurePlay = () => {
-      player.play().catch(() => {
-        statusBar.textContent = "Playback blocked by browser policy. Click play once to enable sync playback.";
-      });
-    };
-    if (jumpedBySeek) {
-      player.addEventListener("seeked", ensurePlay, { once: true });
-      setTimeout(ensurePlay, 120);
-    } else {
-      ensurePlay();
+  const applySeekAndPlayback = () => {
+    const drift = Math.abs((player.currentTime || 0) - desiredTime);
+    let jumpedBySeek = false;
+    if (drift > 0.35) {
+      jumpedBySeek = true;
+      try {
+        player.currentTime = desiredTime;
+      } catch {
+      }
     }
-  } else {
-    player.pause();
+
+    if (desiredPlaying) {
+      const ensurePlay = () => {
+        player.play().catch(() => {
+          statusBar.textContent = "Playback blocked by browser policy. Click play once to enable sync playback.";
+        });
+      };
+      if (jumpedBySeek) {
+        player.addEventListener("seeked", ensurePlay, { once: true });
+        setTimeout(ensurePlay, 120);
+      } else {
+        ensurePlay();
+      }
+    } else {
+      player.pause();
+    }
+
+    const controllerText = state.controllerUserId === state.me?.id ? "you" : `user#${state.controllerUserId || "?"}`;
+    statusBar.textContent = `Synced by ${by}. t=${desiredTime.toFixed(1)}s, controller: ${controllerText}`;
+    setTimeout(() => {
+      state.suppressVideoEvents = false;
+    }, 260);
+  };
+
+  const shouldWaitForMediaReady = sourceChanged || player.readyState < 1;
+  if (shouldWaitForMediaReady) {
+    let done = false;
+    const finalize = () => {
+      if (done) return;
+      done = true;
+      applySeekAndPlayback();
+    };
+    player.addEventListener("loadedmetadata", finalize, { once: true });
+    player.addEventListener("canplay", finalize, { once: true });
+    setTimeout(finalize, 900);
+    return;
   }
 
-  const controllerText = state.controllerUserId === state.me?.id ? "you" : `user#${state.controllerUserId || "?"}`;
-  statusBar.textContent = `Synced by ${by}. t=${(data.currentTime || 0).toFixed(1)}s, controller: ${controllerText}`;
-  setTimeout(() => {
-    state.suppressVideoEvents = false;
-  }, 260);
+  applySeekAndPlayback();
 }
 
 function sendSync() {
@@ -1016,6 +1056,7 @@ function sendSync() {
 
 function scheduleSync() {
   if (state.suppressVideoEvents) return;
+  if (Date.now() < state.blockLocalSyncUntil) return;
   clearTimeout(state.syncTimer);
   state.syncTimer = setTimeout(sendSync, state.forceTakeover ? 40 : 120);
 }
@@ -1025,6 +1066,19 @@ function onLocalPlaybackAction(event) {
     return;
   }
   if (state.suppressVideoEvents) {
+    return;
+  }
+  if (event && event.isTrusted === false) {
+    syncDebug("skip_untrusted_playback_event", {
+      eventType: event.type,
+    });
+    return;
+  }
+  if (Date.now() < state.blockLocalSyncUntil) {
+    syncDebug("skip_event_while_remote_sync_window", {
+      eventType: event?.type || "unknown",
+      waitMs: state.blockLocalSyncUntil - Date.now(),
+    });
     return;
   }
   state.forceTakeover = true;
