@@ -10,6 +10,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from fastapi import HTTPException, UploadFile
 
@@ -55,12 +56,12 @@ def _split_media_url(url: str) -> tuple[str, str, str] | None:
             # here rel is work/<key>/<filename>, split gave 3 parts; defensive fallback
             pass
     if len(parts) == 3 and parts[0] == "work":
-        work_key, filename = parts[1], parts[2]
+        work_key, filename = unquote(parts[1]), unquote(parts[2])
         return ("work", work_key, filename)
     if len(parts) == 2 and parts[0] in {"video", "audio"}:
-        return (parts[0], "", parts[1])
+        return (parts[0], "", unquote(parts[1]))
     if len(parts) == 1:
-        return ("legacy", "", parts[0])
+        return ("legacy", "", unquote(parts[0]))
     return None
 
 
@@ -80,7 +81,9 @@ def is_valid_media_url(url: str) -> bool:
         return Path(filename).suffix.lower() in ALLOWED_VIDEO_EXTENSIONS
     if kind == "audio":
         return Path(filename).suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
-    return Path(filename).suffix.lower() in (ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS)
+    return Path(filename).suffix.lower() in (
+        ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS
+    )
 
 
 def is_audio_media_url(url: str) -> bool:
@@ -90,13 +93,20 @@ def is_audio_media_url(url: str) -> bool:
     kind, _work_key, filename = split
     if kind == "audio":
         return True
-    return Path(filename).suffix.lower() in ALLOWED_AUDIO_EXTENSIONS and Path(filename).suffix.lower() not in ALLOWED_VIDEO_EXTENSIONS
+    return (
+        Path(filename).suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
+        and Path(filename).suffix.lower() not in ALLOWED_VIDEO_EXTENSIONS
+    )
 
 
-def _find_first_media_file(work_dir: Path, ext_set: set[str], name_prefix: str | None = None) -> Path | None:
+def _find_first_media_file(
+    work_dir: Path, ext_set: set[str], name_prefix: str | None = None
+) -> Path | None:
     if not work_dir.exists() or not work_dir.is_dir():
         return None
-    files = [p for p in work_dir.iterdir() if p.is_file() and p.suffix.lower() in ext_set]
+    files = [
+        p for p in work_dir.iterdir() if p.is_file() and p.suffix.lower() in ext_set
+    ]
     if not files:
         return None
     if name_prefix:
@@ -165,7 +175,8 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
         if work_key not in by_work:
             by_work[work_key] = {
                 "title": row["title"] or work_key,
-                "mediaType": row["media_type"] or _guess_media_type(row["title"] or work_key),
+                "mediaType": row["media_type"]
+                or _guess_media_type(row["title"] or work_key),
                 "updatedAt": row["updated_at"] or dt_to_str(now_utc()),
             }
 
@@ -180,15 +191,23 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
         src = by_work.get(work_key, {})
         payload = {
             "title": src.get("title") or old_meta.get("title") or work_key,
-            "mediaType": src.get("mediaType") or old_meta.get("mediaType") or _guess_media_type(work_key),
-            "updatedAt": src.get("updatedAt") or old_meta.get("updatedAt") or dt_to_str(now_utc()),
+            "mediaType": src.get("mediaType")
+            or old_meta.get("mediaType")
+            or _guess_media_type(work_key),
+            "updatedAt": src.get("updatedAt")
+            or old_meta.get("updatedAt")
+            or dt_to_str(now_utc()),
         }
         if meta_path.exists():
             if old_meta != payload:
-                meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                meta_path.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+                )
                 updated += 1
         else:
-            meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            meta_path.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
             created += 1
 
     return {"created": created, "updated": updated}
@@ -229,7 +248,10 @@ def _ensure_default_cover() -> Path:
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0 or not default_cover.exists():
         detail = (proc.stderr or b"").decode("utf-8", errors="ignore")[-240:]
-        raise HTTPException(status_code=500, detail=f"Failed to create default cover: {detail or 'ffmpeg failed'}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create default cover: {detail or 'ffmpeg failed'}",
+        )
     return default_cover
 
 
@@ -240,12 +262,27 @@ def _build_cover_for_work(work_dir: Path, video_file: Path | None) -> str:
 
     if video_file and video_file.exists():
         cmd = [
-            "ffmpeg", "-y", "-i", str(video_file),
-            "-vf", "select=eq(pict_type\\,I)", "-frames:v", "1", str(cover_path),
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_file),
+            "-vf",
+            "select=eq(pict_type\\,I)",
+            "-frames:v",
+            "1",
+            str(cover_path),
         ]
         proc = subprocess.run(cmd, capture_output=True)
         if proc.returncode != 0 or not cover_path.exists():
-            cmd2 = ["ffmpeg", "-y", "-i", str(video_file), "-frames:v", "1", str(cover_path)]
+            cmd2 = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_file),
+                "-frames:v",
+                "1",
+                str(cover_path),
+            ]
             subprocess.run(cmd2, capture_output=True)
         if cover_path.exists():
             return media_url_from_work(work_dir.name, cover_path.name)
@@ -257,7 +294,10 @@ def _build_cover_for_work(work_dir: Path, video_file: Path | None) -> str:
 
 def _save_uploaded_cover(work_dir: Path, cover: UploadFile) -> str:
     suffix = Path(cover.filename or "").suffix.lower()
-    raw_path = MEDIA_TMP_DIR / f"raw_cover_{work_dir.name}_{secrets.token_hex(4)}{suffix or '.img'}"
+    raw_path = (
+        MEDIA_TMP_DIR
+        / f"raw_cover_{work_dir.name}_{secrets.token_hex(4)}{suffix or '.img'}"
+    )
     with raw_path.open("wb") as out:
         while True:
             chunk = cover.file.read(1024 * 1024)
@@ -333,8 +373,12 @@ def collect_media_files() -> dict[str, dict[str, Any]]:
         assert stat_size_target is not None
         stat_size = stat_size_target.stat().st_size
         files[work_dir.name] = {
-            "videoUrl": media_url_from_work(work_dir.name, video_file.name) if video_file else "",
-            "audioUrl": media_url_from_work(work_dir.name, audio_file.name) if audio_file else "",
+            "videoUrl": media_url_from_work(work_dir.name, video_file.name)
+            if video_file
+            else "",
+            "audioUrl": media_url_from_work(work_dir.name, audio_file.name)
+            if audio_file
+            else "",
             "coverUrl": _resolve_cover_url(work_dir.name),
             "size": stat_size,
             "updatedAt": dt_to_str(datetime.fromtimestamp(latest_mtime, timezone.utc)),
@@ -389,7 +433,8 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "videoUrl": file_meta["videoUrl"],
                 "audioUrl": file_meta["audioUrl"],
                 "coverUrl": file_meta.get("coverUrl") or _resolve_cover_url(stem),
-                "type": (file_meta.get("meta", {}) or {}).get("mediaType") or _guess_media_type(stem),
+                "type": (file_meta.get("meta", {}) or {}).get("mediaType")
+                or _guess_media_type(stem),
                 "duration": 0,
                 "size": file_meta["size"],
                 "updatedAt": file_meta["updatedAt"],
@@ -423,7 +468,10 @@ def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
         shutil.rmtree(work_dir, ignore_errors=True)
 
     # Legacy cleanup fallback.
-    for directory, ext_set in ((MEDIA_VIDEO_DIR, ALLOWED_VIDEO_EXTENSIONS), (MEDIA_AUDIO_DIR, ALLOWED_AUDIO_EXTENSIONS)):
+    for directory, ext_set in (
+        (MEDIA_VIDEO_DIR, ALLOWED_VIDEO_EXTENSIONS),
+        (MEDIA_AUDIO_DIR, ALLOWED_AUDIO_EXTENSIONS),
+    ):
         if not directory.exists():
             continue
         for path in directory.iterdir():
@@ -434,14 +482,22 @@ def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
                 deleted_files.append(path.name)
 
     rows = conn.execute("SELECT id, video_url, audio_url FROM media_assets").fetchall()
-    delete_ids = [row["id"] for row in rows if stem_from_media_url(row["video_url"] or row["audio_url"] or "") == stem]
+    delete_ids = [
+        row["id"]
+        for row in rows
+        if stem_from_media_url(row["video_url"] or row["audio_url"] or "") == stem
+    ]
     if delete_ids:
-        conn.executemany("DELETE FROM media_assets WHERE id = ?", [(mid,) for mid in delete_ids])
+        conn.executemany(
+            "DELETE FROM media_assets WHERE id = ?", [(mid,) for mid in delete_ids]
+        )
     conn.commit()
     return {"deletedFiles": deleted_files, "deletedAssetRows": len(delete_ids)}
 
 
-def rename_media_work(conn: sqlite3.Connection, old_key: str, new_name: str) -> dict[str, Any]:
+def rename_media_work(
+    conn: sqlite3.Connection, old_key: str, new_name: str
+) -> dict[str, Any]:
     if not old_key:
         raise HTTPException(status_code=400, detail="Invalid media key")
     target_key = sanitize_filename_stem(new_name)
@@ -465,7 +521,11 @@ def rename_media_work(conn: sqlite3.Connection, old_key: str, new_name: str) -> 
         raise HTTPException(status_code=400, detail="Work folder missing video file")
 
     rows = conn.execute("SELECT id, video_url, audio_url FROM media_assets").fetchall()
-    update_ids = [row["id"] for row in rows if stem_from_media_url(row["video_url"] or row["audio_url"] or "") == old_key]
+    update_ids = [
+        row["id"]
+        for row in rows
+        if stem_from_media_url(row["video_url"] or row["audio_url"] or "") == old_key
+    ]
     for row_id in update_ids:
         conn.execute(
             "UPDATE media_assets SET title = ?, video_url = ?, audio_url = ?, updated_at = ? WHERE id = ?",
@@ -483,7 +543,9 @@ def rename_media_work(conn: sqlite3.Connection, old_key: str, new_name: str) -> 
 
 def ensure_ffmpeg_tools() -> None:
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        raise HTTPException(status_code=500, detail="ffmpeg/ffprobe not found on server")
+        raise HTTPException(
+            status_code=500, detail="ffmpeg/ffprobe not found on server"
+        )
 
 
 def probe_media(file_path: Path) -> dict[str, Any]:
@@ -500,7 +562,10 @@ def probe_media(file_path: Path) -> dict[str, Any]:
     result = subprocess.run(cmd, capture_output=True, text=False)
     if result.returncode != 0:
         detail = (result.stderr or b"").decode("utf-8", errors="ignore")[-300:]
-        raise HTTPException(status_code=400, detail=f"Cannot parse uploaded media: {detail or 'ffprobe failed'}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot parse uploaded media: {detail or 'ffprobe failed'}",
+        )
     try:
         stdout_text = (result.stdout or b"").decode("utf-8", errors="ignore")
         return json.loads(stdout_text)
@@ -515,7 +580,8 @@ def extract_media_profile(probe_result: dict[str, Any]) -> dict[str, str]:
         (
             s
             for s in streams
-            if s.get("codec_type") == "video" and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+            if s.get("codec_type") == "video"
+            and not bool((s.get("disposition") or {}).get("attached_pic", 0))
         ),
         {},
     )
@@ -527,7 +593,9 @@ def extract_media_profile(probe_result: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def is_browser_friendly_mp4(profile: dict[str, str], probe_result: dict[str, Any]) -> bool:
+def is_browser_friendly_mp4(
+    profile: dict[str, str], probe_result: dict[str, Any]
+) -> bool:
     if not (
         profile["container"] in {"mov", "mp4", "m4a", "3gp", "3g2", "mj2"}
         and profile["videoCodec"] == "h264"
@@ -540,7 +608,8 @@ def is_browser_friendly_mp4(profile: dict[str, str], probe_result: dict[str, Any
         (
             s
             for s in streams
-            if s.get("codec_type") == "video" and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+            if s.get("codec_type") == "video"
+            and not bool((s.get("disposition") or {}).get("attached_pic", 0))
         ),
         {},
     )
@@ -574,11 +643,15 @@ def allocate_media_stem(original_stem: str) -> str:
         index += 1
 
 
-async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile | None = None) -> dict[str, Any]:
+async def import_media_file(
+    file: UploadFile, media_type: str, cover: UploadFile | None = None
+) -> dict[str, Any]:
     """导入本地视频/音频，输出 work/<title>/video|audio 资源并入库。"""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in (ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS):
-        raise HTTPException(status_code=400, detail="Only supported video/audio formats are allowed")
+        raise HTTPException(
+            status_code=400, detail="Only supported video/audio formats are allowed"
+        )
 
     ensure_ffmpeg_tools()
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
@@ -614,7 +687,8 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
         duration = 0.0
     streams = probe_result.get("streams") or []
     has_video = any(
-        s.get("codec_type") == "video" and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+        s.get("codec_type") == "video"
+        and not bool((s.get("disposition") or {}).get("attached_pic", 0))
         for s in streams
     )
     has_audio = any(s.get("codec_type") == "audio" for s in streams)
@@ -637,15 +711,33 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
     if has_video:
         if is_browser_friendly_mp4(profile, probe_result):
             cmd = [
-                "ffmpeg", "-y", "-i", str(raw_path),
-                "-c:v", "copy", "-c:a", "copy" if has_audio else "aac",
-                "-movflags", "+faststart", str(video_path),
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(raw_path),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy" if has_audio else "aac",
+                "-movflags",
+                "+faststart",
+                str(video_path),
             ]
         else:
             transcoded = True
             cmd = [
-                "ffmpeg", "-y", "-i", str(raw_path),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(raw_path),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
             ]
             if has_audio:
                 cmd += ["-c:a", "aac", "-b:a", "128k"]
@@ -653,19 +745,31 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
                 cmd += ["-an"]
             cmd += ["-movflags", "+faststart", str(video_path)]
 
-        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
         _, stderr = await process.communicate()
         if process.returncode != 0:
             raw_path.unlink(missing_ok=True)
             shutil.rmtree(work_dir, ignore_errors=True)
             detail = stderr.decode("utf-8", errors="ignore")[-400:]
-            raise HTTPException(status_code=500, detail=f"Transcode failed: {detail or 'unknown error'}")
+            raise HTTPException(
+                status_code=500, detail=f"Transcode failed: {detail or 'unknown error'}"
+            )
 
         video_url = media_url_from_work(media_stem, video_name)
         if has_audio:
             audio_cmd = [
-                "ffmpeg", "-y", "-i", str(video_path),
-                "-vn", "-c:a", "aac", "-b:a", "160k", str(audio_path),
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_path),
+                "-vn",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                str(audio_path),
             ]
             audio_proc = await asyncio.create_subprocess_exec(
                 *audio_cmd,
@@ -681,11 +785,21 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
         if not has_audio:
             raw_path.unlink(missing_ok=True)
             shutil.rmtree(work_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail="Uploaded file has no audio or video stream")
+            raise HTTPException(
+                status_code=400, detail="Uploaded file has no audio or video stream"
+            )
         transcoded = suffix not in {".m4a", ".aac"}
         audio_cmd = [
-            "ffmpeg", "-y", "-i", str(raw_path),
-            "-vn", "-c:a", "aac", "-b:a", "160k", str(audio_path),
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(raw_path),
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            str(audio_path),
         ]
         audio_proc = await asyncio.create_subprocess_exec(
             *audio_cmd,
@@ -697,13 +811,22 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
             raw_path.unlink(missing_ok=True)
             shutil.rmtree(work_dir, ignore_errors=True)
             detail = audio_err.decode("utf-8", errors="ignore")[-400:]
-            raise HTTPException(status_code=500, detail=f"Audio import failed: {detail or 'unknown error'}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Audio import failed: {detail or 'unknown error'}",
+            )
         audio_url = media_url_from_work(media_stem, audio_name)
 
     raw_path.unlink(missing_ok=True)
 
     try:
-        cover_url = _save_uploaded_cover(work_dir, cover) if cover else _build_cover_for_work(work_dir, video_path if video_path.exists() else None)
+        cover_url = (
+            _save_uploaded_cover(work_dir, cover)
+            if cover
+            else _build_cover_for_work(
+                work_dir, video_path if video_path.exists() else None
+            )
+        )
     except HTTPException:
         shutil.rmtree(work_dir, ignore_errors=True)
         raise
@@ -725,7 +848,11 @@ async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile
             cover_url,
             media_type,
             duration,
-            (video_path.stat().st_size if video_path.exists() else audio_path.stat().st_size),
+            (
+                video_path.stat().st_size
+                if video_path.exists()
+                else audio_path.stat().st_size
+            ),
             now_str,
             now_str,
         )
@@ -808,7 +935,9 @@ def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
         if created:
             moved_dirs += 1
 
-    rows = conn.execute("SELECT id, title, video_url, audio_url, cover_url, media_type FROM media_assets").fetchall()
+    rows = conn.execute(
+        "SELECT id, title, video_url, audio_url, cover_url, media_type FROM media_assets"
+    ).fetchall()
     for row in rows:
         stem = stem_from_media_url(row["video_url"] or row["audio_url"] or "")
         if not stem:
@@ -842,7 +971,9 @@ def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
     conn.commit()
 
     # Deduplicate rows that point to the same work folder (keep newest update).
-    rows2 = conn.execute("SELECT id, video_url, audio_url, updated_at FROM media_assets").fetchall()
+    rows2 = conn.execute(
+        "SELECT id, video_url, audio_url, updated_at FROM media_assets"
+    ).fetchall()
     by_work: dict[str, list[sqlite3.Row]] = {}
     for row in rows2:
         work = stem_from_media_url(row["video_url"] or row["audio_url"] or "")
@@ -852,7 +983,9 @@ def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
     for _work, entries in by_work.items():
         if len(entries) < 2:
             continue
-        ordered = sorted(entries, key=lambda r: str(r["updated_at"] or ""), reverse=True)
+        ordered = sorted(
+            entries, key=lambda r: str(r["updated_at"] or ""), reverse=True
+        )
         for dup in ordered[1:]:
             conn.execute("DELETE FROM media_assets WHERE id = ?", (dup["id"],))
     conn.commit()

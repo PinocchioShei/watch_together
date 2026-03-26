@@ -1,10 +1,21 @@
 """FastAPI 路由装配与应用创建。"""
 
 import json
+import logging
 import sqlite3
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,7 +29,15 @@ from .auth import (
     require_user,
     verify_password,
 )
-from .config import ADMIN_PASSWORD, ADMIN_USERNAME, MEDIA_DIR, RESOURCE_DIR, STATIC_DIR
+from .config import (
+    ADMIN_PASSWORD,
+    ADMIN_USERNAME,
+    MEDIA_DIR,
+    RESOURCE_DIR,
+    STATIC_DIR,
+    SYNC_DEBUG_ENABLED,
+    SYNC_LOG_FILE,
+)
 from .media import (
     backfill_work_meta,
     collect_media_files,
@@ -48,6 +67,27 @@ from .schemas import (
 from .state import ADMIN_TOKENS, hub
 from .storage import db_conn, init_db
 from .utils import dt_to_str, now_utc, str_to_dt
+
+
+SYNC_LOGGER = logging.getLogger("watch_together.sync")
+if not SYNC_LOGGER.handlers:
+    handler = RotatingFileHandler(
+        SYNC_LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    SYNC_LOGGER.addHandler(handler)
+    SYNC_LOGGER.setLevel(logging.INFO)
+    SYNC_LOGGER.propagate = False
+
+
+def sync_log(event: str, **fields) -> None:
+    if not SYNC_DEBUG_ENABLED:
+        return
+    payload = {"event": event, **fields}
+    try:
+        SYNC_LOGGER.info(json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        pass
 
 
 def safe_float(value, default: float = 0.0) -> float:
@@ -107,16 +147,25 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
     if RESOURCE_DIR.exists():
-        app.mount("/resource", StaticFiles(directory=str(RESOURCE_DIR)), name="resource")
+        app.mount(
+            "/resource", StaticFiles(directory=str(RESOURCE_DIR)), name="resource"
+        )
 
     async def build_room_members_payload(room_id: int) -> dict:
         online_ids = await hub.room_user_ids(room_id)
         if not online_ids:
-            return {"type": "members", "roomId": room_id, "onlineCount": 0, "members": []}
+            return {
+                "type": "members",
+                "roomId": room_id,
+                "onlineCount": 0,
+                "members": [],
+            }
 
         conn = db_conn()
         try:
-            room = conn.execute("SELECT owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute(
+                "SELECT owner_id FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
             owner_id = room["owner_id"] if room else None
             placeholders = ",".join("?" for _ in online_ids)
             rows = conn.execute(
@@ -126,8 +175,20 @@ def create_app() -> FastAPI:
         finally:
             conn.close()
 
-        members = [{"id": row["id"], "username": row["username"], "isOwner": row["id"] == owner_id} for row in rows]
-        return {"type": "members", "roomId": room_id, "onlineCount": len(members), "members": members}
+        members = [
+            {
+                "id": row["id"],
+                "username": row["username"],
+                "isOwner": row["id"] == owner_id,
+            }
+            for row in rows
+        ]
+        return {
+            "type": "members",
+            "roomId": room_id,
+            "onlineCount": len(members),
+            "members": members,
+        }
 
     async def broadcast_room_members(room_id: int) -> None:
         await hub.broadcast(room_id, await build_room_members_payload(room_id))
@@ -157,12 +218,20 @@ def create_app() -> FastAPI:
         return {"ok": True, "token": token}
 
     @app.patch("/api/admin/profile")
-    def admin_update_profile(payload: AdminUpdateProfilePayload, _: str = Depends(require_admin)):
+    def admin_update_profile(
+        payload: AdminUpdateProfilePayload, _: str = Depends(require_admin)
+    ):
         conn = db_conn()
         try:
             admin_row = ensure_admin_account(conn)
-            if not verify_password(payload.currentPassword, admin_row["password_salt"], admin_row["password_hash"]):
-                raise HTTPException(status_code=401, detail="Current password is incorrect")
+            if not verify_password(
+                payload.currentPassword,
+                admin_row["password_salt"],
+                admin_row["password_hash"],
+            ):
+                raise HTTPException(
+                    status_code=401, detail="Current password is incorrect"
+                )
 
             next_username = (payload.newUsername or admin_row["username"]).strip()
             next_password = payload.newPassword or None
@@ -198,8 +267,12 @@ def create_app() -> FastAPI:
         try:
             users = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
             rooms = conn.execute("SELECT COUNT(*) AS c FROM rooms").fetchone()["c"]
-            sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()["c"]
-            media_rows = conn.execute("SELECT COUNT(*) AS c FROM media_assets").fetchone()["c"]
+            sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()[
+                "c"
+            ]
+            media_rows = conn.execute(
+                "SELECT COUNT(*) AS c FROM media_assets"
+            ).fetchone()["c"]
         finally:
             conn.close()
         return {
@@ -214,16 +287,31 @@ def create_app() -> FastAPI:
     def admin_users(_: str = Depends(require_admin)):
         conn = db_conn()
         try:
-            rows = conn.execute("SELECT id, username, created_at FROM users ORDER BY id DESC").fetchall()
-            return {"items": [{"id": r["id"], "username": r["username"], "createdAt": r["created_at"]} for r in rows]}
+            rows = conn.execute(
+                "SELECT id, username, created_at FROM users ORDER BY id DESC"
+            ).fetchall()
+            return {
+                "items": [
+                    {
+                        "id": r["id"],
+                        "username": r["username"],
+                        "createdAt": r["created_at"],
+                    }
+                    for r in rows
+                ]
+            }
         finally:
             conn.close()
 
     @app.post("/api/admin/users")
-    def admin_create_user(payload: AdminCreateUserPayload, _: str = Depends(require_admin)):
+    def admin_create_user(
+        payload: AdminCreateUserPayload, _: str = Depends(require_admin)
+    ):
         conn = db_conn()
         try:
-            exists = conn.execute("SELECT id FROM users WHERE username = ?", (payload.username,)).fetchone()
+            exists = conn.execute(
+                "SELECT id FROM users WHERE username = ?", (payload.username,)
+            ).fetchone()
             if exists:
                 raise HTTPException(status_code=409, detail="Username already exists")
             salt, password_hash = hash_password(payload.password)
@@ -237,10 +325,14 @@ def create_app() -> FastAPI:
             conn.close()
 
     @app.patch("/api/admin/users/{user_id}")
-    def admin_update_user(user_id: int, payload: AdminUpdateUserPayload, _: str = Depends(require_admin)):
+    def admin_update_user(
+        user_id: int, payload: AdminUpdateUserPayload, _: str = Depends(require_admin)
+    ):
         conn = db_conn()
         try:
-            row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+            row = conn.execute(
+                "SELECT id FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="User not found")
             salt, password_hash = hash_password(payload.password)
@@ -258,7 +350,9 @@ def create_app() -> FastAPI:
     def admin_delete_user(user_id: int, _: str = Depends(require_admin)):
         conn = db_conn()
         try:
-            row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+            row = conn.execute(
+                "SELECT id FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="User not found")
             conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -329,7 +423,11 @@ def create_app() -> FastAPI:
             conn.close()
 
     @app.patch("/api/admin/media/{media_key}")
-    def admin_rename_media(media_key: str, payload: AdminRenameMediaPayload, _: str = Depends(require_admin)):
+    def admin_rename_media(
+        media_key: str,
+        payload: AdminRenameMediaPayload,
+        _: str = Depends(require_admin),
+    ):
         conn = db_conn()
         try:
             return rename_media_work(conn, media_key, payload.newWorkName)
@@ -337,7 +435,11 @@ def create_app() -> FastAPI:
             conn.close()
 
     @app.patch("/api/admin/media/{media_key}/type")
-    def admin_update_media_type(media_key: str, payload: AdminUpdateMediaTypePayload, _: str = Depends(require_admin)):
+    def admin_update_media_type(
+        media_key: str,
+        payload: AdminUpdateMediaTypePayload,
+        _: str = Depends(require_admin),
+    ):
         media_type = (payload.mediaType or "").strip()
         if media_type not in {"movie", "RJ", "ASMR", "music", "shot"}:
             raise HTTPException(status_code=422, detail="Invalid media type")
@@ -361,7 +463,9 @@ def create_app() -> FastAPI:
                 file_meta = file_index.get(media_key)
                 if not file_meta:
                     raise HTTPException(status_code=404, detail="Media not found")
-                cover_url = file_meta.get("coverUrl") or f"/media/work/{media_key}/cover.jpg"
+                cover_url = (
+                    file_meta.get("coverUrl") or f"/media/work/{media_key}/cover.jpg"
+                )
                 conn.execute(
                     """
                     INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
@@ -390,7 +494,9 @@ def create_app() -> FastAPI:
                         "title": media_key,
                         "updatedAt": now_str,
                     }
-                    meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False), encoding="utf-8")
+                    meta_path.write_text(
+                        json.dumps(meta_payload, ensure_ascii=False), encoding="utf-8"
+                    )
                 except Exception:
                     pass
             conn.commit()
@@ -402,7 +508,9 @@ def create_app() -> FastAPI:
     async def admin_delete_room(room_id: int, _: str = Depends(require_admin)):
         conn = db_conn()
         try:
-            room = conn.execute("SELECT id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute(
+                "SELECT id, name FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
             if not room:
                 raise HTTPException(status_code=404, detail="Room not found")
             room_name = room["name"]
@@ -411,7 +519,15 @@ def create_app() -> FastAPI:
         finally:
             conn.close()
 
-        await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": "admin"})
+        await hub.broadcast(
+            room_id,
+            {
+                "type": "room_deleted",
+                "roomId": room_id,
+                "roomName": room_name,
+                "by": "admin",
+            },
+        )
         return {"ok": True, "roomId": room_id}
 
     @app.post("/api/admin/import")
@@ -427,7 +543,9 @@ def create_app() -> FastAPI:
     def register(payload: RegisterPayload):
         conn = db_conn()
         try:
-            exists = conn.execute("SELECT id FROM users WHERE username = ?", (payload.username,)).fetchone()
+            exists = conn.execute(
+                "SELECT id FROM users WHERE username = ?", (payload.username,)
+            ).fetchone()
             if exists:
                 raise HTTPException(status_code=409, detail="Username already exists")
             salt, password_hash = hash_password(payload.password)
@@ -448,7 +566,9 @@ def create_app() -> FastAPI:
                 "SELECT id, password_salt, password_hash FROM users WHERE username = ?",
                 (payload.username,),
             ).fetchone()
-            if not row or not verify_password(payload.password, row["password_salt"], row["password_hash"]):
+            if not row or not verify_password(
+                payload.password, row["password_salt"], row["password_hash"]
+            ):
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
             existing_rows = conn.execute(
@@ -456,7 +576,11 @@ def create_app() -> FastAPI:
                 (row["id"],),
             ).fetchall()
             if existing_rows:
-                valid_tokens = [r["token"] for r in existing_rows if str_to_dt(r["expires_at"]) >= now_utc()]
+                valid_tokens = [
+                    r["token"]
+                    for r in existing_rows
+                    if str_to_dt(r["expires_at"]) >= now_utc()
+                ]
                 # 放宽策略：新登录覆盖旧会话，避免本机退登后短暂锁死。
                 conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
                 conn.commit()
@@ -465,7 +589,13 @@ def create_app() -> FastAPI:
 
             token = create_session(conn, row["id"])
             res = JSONResponse({"ok": True, "token": token})
-            res.set_cookie(key="session_token", value=token, httponly=True, samesite="lax", max_age=14 * 24 * 3600)
+            res.set_cookie(
+                key="session_token",
+                value=token,
+                httponly=True,
+                samesite="lax",
+                max_age=14 * 24 * 3600,
+            )
             return res
         finally:
             conn.close()
@@ -558,10 +688,15 @@ def create_app() -> FastAPI:
             conn.close()
 
     @app.post("/api/rooms/{room_id}/join")
-    def join_room(room_id: int, payload: RoomJoinPayload, user: User = Depends(require_user)):
+    def join_room(
+        room_id: int, payload: RoomJoinPayload, user: User = Depends(require_user)
+    ):
         conn = db_conn()
         try:
-            room = conn.execute("SELECT id, owner_id, password_salt, password_hash FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute(
+                "SELECT id, owner_id, password_salt, password_hash FROM rooms WHERE id = ?",
+                (room_id,),
+            ).fetchone()
             if not room:
                 raise HTTPException(status_code=404, detail="Room not found")
 
@@ -576,21 +711,29 @@ def create_app() -> FastAPI:
                 (room_id, user.id),
             ).fetchone()
             cached_password = (member["room_password_cache"] or "") if member else ""
-            access_cached_password = (access_cache["room_password_cache"] or "") if access_cache else ""
+            access_cached_password = (
+                (access_cache["room_password_cache"] or "") if access_cache else ""
+            )
             submitted_password = (payload.password or "").strip()
 
             if room_salt and room_hash:
                 password_ok = False
                 if submitted_password:
-                    password_ok = verify_password(submitted_password, room_salt, room_hash)
+                    password_ok = verify_password(
+                        submitted_password, room_salt, room_hash
+                    )
                 elif cached_password:
                     password_ok = verify_password(cached_password, room_salt, room_hash)
                 elif access_cached_password:
-                    password_ok = verify_password(access_cached_password, room_salt, room_hash)
+                    password_ok = verify_password(
+                        access_cached_password, room_salt, room_hash
+                    )
                 if not password_ok:
                     raise HTTPException(status_code=403, detail="Invalid room password")
 
-            cache_to_save = submitted_password or cached_password or access_cached_password
+            cache_to_save = (
+                submitted_password or cached_password or access_cached_password
+            )
             conn.execute(
                 """
                 INSERT INTO room_members(room_id, user_id, room_password_cache, joined_at)
@@ -624,7 +767,10 @@ def create_app() -> FastAPI:
     def room_state(room_id: int, user: User = Depends(require_user)):
         conn = db_conn()
         try:
-            member = conn.execute("SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?", (room_id, user.id)).fetchone()
+            member = conn.execute(
+                "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room_id, user.id),
+            ).fetchone()
             if not member:
                 raise HTTPException(status_code=403, detail="Join room first")
             state = conn.execute(
@@ -638,10 +784,13 @@ def create_app() -> FastAPI:
             if not state:
                 raise HTTPException(status_code=404, detail="State not found")
             controller_user_id = state["controller_user_id"]
-            if controller_user_id is not None and not conn.execute(
-                "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
-                (room_id, controller_user_id),
-            ).fetchone():
+            if (
+                controller_user_id is not None
+                and not conn.execute(
+                    "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+                    (room_id, controller_user_id),
+                ).fetchone()
+            ):
                 controller_user_id = None
                 conn.execute(
                     "UPDATE room_state SET controller_user_id = NULL, updated_at = ? WHERE room_id = ?",
@@ -649,9 +798,14 @@ def create_app() -> FastAPI:
                 )
                 conn.commit()
             normalized_video_url = normalize_media_url(state["video_url"] or "")
-            safe_video_url = normalized_video_url if is_valid_media_url(normalized_video_url) else ""
+            safe_video_url = (
+                normalized_video_url if is_valid_media_url(normalized_video_url) else ""
+            )
             if safe_video_url and safe_video_url != (state["video_url"] or ""):
-                conn.execute("UPDATE room_state SET video_url = ?, updated_at = ? WHERE room_id = ?", (safe_video_url, dt_to_str(now_utc()), room_id))
+                conn.execute(
+                    "UPDATE room_state SET video_url = ?, updated_at = ? WHERE room_id = ?",
+                    (safe_video_url, dt_to_str(now_utc()), room_id),
+                )
                 conn.commit()
             play_mode = "audio" if is_audio_media_url(safe_video_url) else "video"
             can_control = controller_user_id in (None, user.id)
@@ -671,28 +825,45 @@ def create_app() -> FastAPI:
     async def delete_room(room_id: int, user: User = Depends(require_user)):
         conn = db_conn()
         try:
-            room = conn.execute("SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute(
+                "SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
             if not room:
                 raise HTTPException(status_code=404, detail="Room not found")
             if room["owner_id"] != user.id:
-                raise HTTPException(status_code=403, detail="Only the room owner can delete this room")
+                raise HTTPException(
+                    status_code=403, detail="Only the room owner can delete this room"
+                )
             room_name = room["name"]
             conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
             conn.commit()
         finally:
             conn.close()
 
-        await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": user.username})
+        await hub.broadcast(
+            room_id,
+            {
+                "type": "room_deleted",
+                "roomId": room_id,
+                "roomName": room_name,
+                "by": user.username,
+            },
+        )
         return {"ok": True, "roomId": room_id}
 
     @app.post("/api/rooms/{room_id}/leave")
     async def leave_room(room_id: int, user: User = Depends(require_user)):
         conn = db_conn()
         try:
-            room = conn.execute("SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute(
+                "SELECT id, owner_id, name FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
             if not room:
                 raise HTTPException(status_code=404, detail="Room not found")
-            member = conn.execute("SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?", (room_id, user.id)).fetchone()
+            member = conn.execute(
+                "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room_id, user.id),
+            ).fetchone()
             if not member:
                 raise HTTPException(status_code=403, detail="Not in room")
 
@@ -702,7 +873,10 @@ def create_app() -> FastAPI:
                 conn.commit()
                 deleted = True
             else:
-                conn.execute("DELETE FROM room_members WHERE room_id = ? AND user_id = ?", (room_id, user.id))
+                conn.execute(
+                    "DELETE FROM room_members WHERE room_id = ? AND user_id = ?",
+                    (room_id, user.id),
+                )
                 conn.commit()
                 deleted = False
                 room_name = room["name"]
@@ -710,7 +884,15 @@ def create_app() -> FastAPI:
             conn.close()
 
         if deleted:
-            await hub.broadcast(room_id, {"type": "room_deleted", "roomId": room_id, "roomName": room_name, "by": user.username})
+            await hub.broadcast(
+                room_id,
+                {
+                    "type": "room_deleted",
+                    "roomId": room_id,
+                    "roomName": room_name,
+                    "by": user.username,
+                },
+            )
         else:
             await broadcast_room_members(room_id)
         return {"ok": True, "roomDeleted": deleted}
@@ -730,11 +912,18 @@ def create_app() -> FastAPI:
         conn = db_conn()
         is_owner = False
         try:
-            user = get_user_by_token(conn, token or websocket.cookies.get("session_token"))
-            row = conn.execute("SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?", (room_id, user.id)).fetchone()
+            user = get_user_by_token(
+                conn, token or websocket.cookies.get("session_token")
+            )
+            row = conn.execute(
+                "SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?",
+                (room_id, user.id),
+            ).fetchone()
             if not row:
                 raise HTTPException(status_code=403, detail="Not in room")
-            owner_row = conn.execute("SELECT owner_id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            owner_row = conn.execute(
+                "SELECT owner_id FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
             is_owner = bool(owner_row and owner_row["owner_id"] == user.id)
         except HTTPException:
             await websocket.close(code=1008)
@@ -744,6 +933,7 @@ def create_app() -> FastAPI:
 
         await websocket.accept()
         await hub.add(room_id, websocket, user.id)
+        sync_log("ws_connected", roomId=room_id, userId=user.id, username=user.username)
         await broadcast_room_members(room_id)
 
         try:
@@ -759,10 +949,16 @@ def create_app() -> FastAPI:
             init_conn.close()
             initial_raw = state["video_url"] if state else ""
             normalized_initial = normalize_media_url(initial_raw)
-            initial_video_url = normalized_initial if is_valid_media_url(normalized_initial) else ""
-            initial_play_mode = "audio" if is_audio_media_url(initial_video_url) else "video"
+            initial_video_url = (
+                normalized_initial if is_valid_media_url(normalized_initial) else ""
+            )
+            initial_play_mode = (
+                "audio" if is_audio_media_url(initial_video_url) else "video"
+            )
             initial_controller = state["controller_user_id"] if state else user.id
-            if initial_controller is not None and not await hub.has_user(room_id, int(initial_controller)):
+            if initial_controller is not None and not await hub.has_user(
+                room_id, int(initial_controller)
+            ):
                 initial_controller = None
                 fix_conn = db_conn()
                 try:
@@ -781,12 +977,26 @@ def create_app() -> FastAPI:
                         "playMode": initial_play_mode,
                         "currentTime": state["current_time_sec"] if state else 0,
                         "isPlaying": bool(state["is_playing"]) if state else False,
-                        "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
+                        "updatedAt": state["updated_at"]
+                        if state
+                        else dt_to_str(now_utc()),
                         "controllerUserId": initial_controller,
                         "actionId": 0,
                         "by": "system",
                     }
                 )
+            )
+            sync_log(
+                "ws_initial_state",
+                roomId=room_id,
+                userId=user.id,
+                videoUrl=initial_video_url,
+                playMode=initial_play_mode,
+                currentTime=safe_float(state["current_time_sec"], 0.0)
+                if state
+                else 0.0,
+                isPlaying=bool(state["is_playing"]) if state else False,
+                controllerUserId=initial_controller,
             )
 
             while True:
@@ -799,9 +1009,25 @@ def create_app() -> FastAPI:
                     video_url = normalize_media_url(video_url)
                     play_mode = str(payload.get("playMode", "video")).strip().lower()
                     if play_mode not in {"video", "audio"}:
-                        play_mode = "audio" if is_audio_media_url(video_url) else "video"
+                        play_mode = (
+                            "audio" if is_audio_media_url(video_url) else "video"
+                        )
                     if not is_valid_media_url(video_url):
-                        await websocket.send_text(json.dumps({"type": "error", "message": "Only media files under /media are allowed"}))
+                        sync_log(
+                            "ws_sync_reject_invalid_url",
+                            roomId=room_id,
+                            userId=user.id,
+                            actionId=action_id,
+                            videoUrl=video_url,
+                        )
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": "Only media files under /media are allowed",
+                                }
+                            )
+                        )
                         continue
                     current_time = max(float(payload.get("currentTime", 0)), 0)
                     is_playing = bool(payload.get("isPlaying", False))
@@ -813,12 +1039,27 @@ def create_app() -> FastAPI:
                             "SELECT controller_user_id FROM room_state WHERE room_id = ?",
                             (room_id,),
                         ).fetchone()
-                        active_controller = latest_state["controller_user_id"] if latest_state else None
-                        if active_controller is not None and not await hub.has_user(room_id, int(active_controller)):
+                        active_controller = (
+                            latest_state["controller_user_id"] if latest_state else None
+                        )
+                        if active_controller is not None and not await hub.has_user(
+                            room_id, int(active_controller)
+                        ):
                             active_controller = None
 
                         takeover = bool(payload.get("forceTakeover", False))
                         if active_controller not in (None, user.id) and not takeover:
+                            sync_log(
+                                "ws_sync_reject_controller_locked",
+                                roomId=room_id,
+                                userId=user.id,
+                                actionId=action_id,
+                                requestedUrl=video_url,
+                                requestedMode=play_mode,
+                                requestedTime=current_time,
+                                requestedPlaying=is_playing,
+                                activeController=active_controller,
+                            )
                             await websocket.send_text(
                                 json.dumps(
                                     {
@@ -849,15 +1090,58 @@ def create_app() -> FastAPI:
                                 updated_by = excluded.updated_by,
                                 updated_at = excluded.updated_at
                             """,
-                            (room_id, video_url, current_time, 1 if is_playing else 0, user.id, user.id, dt_to_str(now_utc())),
+                            (
+                                room_id,
+                                video_url,
+                                current_time,
+                                1 if is_playing else 0,
+                                user.id,
+                                user.id,
+                                dt_to_str(now_utc()),
+                            ),
                         )
                         up_conn.commit()
                         should_broadcast_state = True
+                        sync_log(
+                            "ws_sync_accept",
+                            roomId=room_id,
+                            userId=user.id,
+                            username=user.username,
+                            actionId=action_id,
+                            videoUrl=video_url,
+                            playMode=play_mode,
+                            currentTime=current_time,
+                            isPlaying=is_playing,
+                            forceTakeover=takeover,
+                        )
                     except sqlite3.IntegrityError:
                         # 房间或用户关系已失效，避免打爆连接并提示客户端退出当前房间。
-                        await websocket.send_text(json.dumps({"type": "error", "message": "Room no longer exists"}))
+                        sync_log(
+                            "ws_sync_error_integrity",
+                            roomId=room_id,
+                            userId=user.id,
+                            actionId=action_id,
+                        )
+                        await websocket.send_text(
+                            json.dumps(
+                                {"type": "error", "message": "Room no longer exists"}
+                            )
+                        )
                     except sqlite3.OperationalError:
-                        await websocket.send_text(json.dumps({"type": "error", "message": "Server busy, please retry"}))
+                        sync_log(
+                            "ws_sync_error_operational",
+                            roomId=room_id,
+                            userId=user.id,
+                            actionId=action_id,
+                        )
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": "Server busy, please retry",
+                                }
+                            )
+                        )
                     finally:
                         up_conn.close()
 
@@ -876,14 +1160,40 @@ def create_app() -> FastAPI:
                                 "by": user.username,
                             },
                         )
+                        sync_log(
+                            "ws_sync_broadcast",
+                            roomId=room_id,
+                            by=user.username,
+                            actionId=action_id,
+                            videoUrl=video_url,
+                            playMode=play_mode,
+                            currentTime=current_time,
+                            isPlaying=is_playing,
+                        )
                 elif msg_type == "ping":
-                    await websocket.send_text(json.dumps({"type": "pong", "ts": dt_to_str(now_utc())}))
+                    await websocket.send_text(
+                        json.dumps({"type": "pong", "ts": dt_to_str(now_utc())})
+                    )
                 elif msg_type == "chat":
                     msg = str(payload.get("message", "")).strip()[:400]
                     if not msg:
                         continue
-                    await hub.broadcast(room_id, {"type": "chat", "message": msg, "by": user.username, "sentAt": dt_to_str(now_utc())})
+                    await hub.broadcast(
+                        room_id,
+                        {
+                            "type": "chat",
+                            "message": msg,
+                            "by": user.username,
+                            "sentAt": dt_to_str(now_utc()),
+                        },
+                    )
         except WebSocketDisconnect:
+            sync_log(
+                "ws_disconnected",
+                roomId=room_id,
+                userId=user.id,
+                username=user.username,
+            )
             pass
         finally:
             await hub.remove(room_id, websocket)
@@ -894,20 +1204,28 @@ def create_app() -> FastAPI:
                     "SELECT video_url, current_time AS current_time_sec, is_playing, controller_user_id FROM room_state WHERE room_id = ?",
                     (room_id,),
                 ).fetchone()
-                if row and row["controller_user_id"] == user.id and not await hub.has_user(room_id, user.id):
+                if (
+                    row
+                    and row["controller_user_id"] == user.id
+                    and not await hub.has_user(room_id, user.id)
+                ):
                     cleanup_conn.execute(
                         "UPDATE room_state SET controller_user_id = NULL, updated_at = ? WHERE room_id = ?",
                         (dt_to_str(now_utc()), room_id),
                     )
                     cleanup_conn.commit()
                     normalized_url = normalize_media_url(row["video_url"] or "")
-                    safe_url = normalized_url if is_valid_media_url(normalized_url) else ""
+                    safe_url = (
+                        normalized_url if is_valid_media_url(normalized_url) else ""
+                    )
                     await hub.broadcast(
                         room_id,
                         {
                             "type": "state",
                             "videoUrl": safe_url,
-                            "playMode": "audio" if is_audio_media_url(safe_url) else "video",
+                            "playMode": "audio"
+                            if is_audio_media_url(safe_url)
+                            else "video",
                             "currentTime": safe_float(row["current_time_sec"], 0.0),
                             "isPlaying": bool(row["is_playing"]),
                             "updatedAt": dt_to_str(now_utc()),

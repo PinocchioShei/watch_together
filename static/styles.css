@@ -441,8 +441,9 @@ button.danger:hover {
   max-height: none;
   overflow: auto;
   display: grid;
-  gap: 12px;
+  gap: 8px;
   align-content: start;
+  grid-template-columns: 1fr;
 }
 
 .media-item {
@@ -455,6 +456,8 @@ button.danger:hover {
   background: rgba(255, 248, 252, 0.78);
   border: 1px solid rgba(220, 131, 181, 0.55);
   overflow: hidden;
+  width: 100%;
+  max-width: 100%;
 }
 
 :root[data-theme="dark"] .media-list button.media-card {
@@ -470,7 +473,7 @@ button.danger:hover {
 .media-cover-wrap {
   position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 16 / 10;
   background: #ffd8ec;
   border-bottom: 1px solid rgba(220, 131, 181, 0.5);
 }
@@ -530,8 +533,8 @@ button.danger:hover {
 }
 
 .media-name-line {
-  padding: 8px 10px;
-  font-size: 12px;
+  padding: 6px 8px;
+  font-size: 11px;
   color: #5e3557;
   letter-spacing: 0.15px;
   white-space: nowrap;

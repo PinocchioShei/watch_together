@@ -20,6 +20,7 @@ const state = {
   mediaLibrary: [],
   activeMediaUrl: "",
   activeMediaId: null,
+  lastSyncedMediaPath: "",
   playMode: "video",
   localActionCounter: 0,
   lastLocalActionId: 0,
@@ -86,6 +87,25 @@ let importInFlight = false;
 let guestAuthOpen = false;
 let importProcessingTimer = null;
 let selectedImportFileStamp = "";
+const DEBUG_SYNC = true;
+
+function syncDebug(event, fields = {}) {
+  if (!DEBUG_SYNC) return;
+  const payload = {
+    event,
+    ts: new Date().toISOString(),
+    roomId: state.roomId,
+    user: state.me?.username || "guest",
+    mode: state.playMode,
+    activeMediaId: state.activeMediaId,
+    activeMediaUrl: toMediaPath(state.activeMediaUrl) || state.activeMediaUrl || "",
+    ...fields,
+  };
+  try {
+    console.info("[WT_SYNC]", payload);
+  } catch {
+  }
+}
 
 window.addEventListener("beforeunload", stopTabLock);
 
@@ -413,7 +433,7 @@ function ensureFilterShowsActiveItem(source = "") {
 
 function setPlayMode(mode, { silent = false } = {}) {
   const nextMode = mode === "audio" ? "audio" : "video";
-  if (state.playMode === nextMode && !silent) {
+  if (state.playMode === nextMode) {
     return;
   }
   state.playMode = nextMode;
@@ -425,11 +445,19 @@ function setPlayMode(mode, { silent = false } = {}) {
   const toPlayer = getActivePlayer();
   const wasPlaying = !fromPlayer.paused;
   const fromTime = Number(fromPlayer.currentTime || 0);
-  const activeItem = state.mediaLibrary.find((item) => item.id === state.activeMediaId);
+  const activeItem = state.activeMediaId != null
+    ? state.mediaLibrary.find((item) => item.id === state.activeMediaId)
+    : state.mediaLibrary.find((item) => {
+      return (
+        normalizeUrl(item.videoUrl || "") === normalizeUrl(state.activeMediaUrl) ||
+        normalizeUrl(item.audioUrl || "") === normalizeUrl(state.activeMediaUrl)
+      );
+    });
   const targetUrl = resolveMediaUrlForMode(activeItem, nextMode);
   if (targetUrl && normalizeUrl(toPlayer.currentSrc || toPlayer.src) !== normalizeUrl(targetUrl)) {
     toPlayer.src = targetUrl;
     state.activeMediaUrl = targetUrl;
+    state.lastSyncedMediaPath = toMediaPath(targetUrl) || state.lastSyncedMediaPath;
   }
   if (toPlayer.currentSrc) {
     toPlayer.currentTime = fromTime;
@@ -516,6 +544,7 @@ function renderMediaLibrary() {
       state.localOverrideUntil = Date.now() + 1200;
       state.activeMediaId = item.id || null;
       state.activeMediaUrl = modeUrl;
+      state.lastSyncedMediaPath = toMediaPath(modeUrl) || state.lastSyncedMediaPath;
       const player = getActivePlayer();
       player.src = modeUrl;
       player.currentTime = 0;
@@ -625,6 +654,7 @@ function enterLobbyView(clearSavedRoom = true) {
   state.playMode = "video";
   state.activeMediaUrl = "";
   state.activeMediaId = null;
+  state.lastSyncedMediaPath = "";
   state.localOverrideUntil = 0;
   state.localActionCounter = 0;
   state.lastLocalActionId = 0;
@@ -813,7 +843,13 @@ function connectWs(roomId) {
 }
 
 function applyRemoteState(data, by) {
-  if (state.activeMediaUrl && !data.videoUrl && typeof data.currentTime === "number" && data.currentTime > 0) {
+  if (state.activeMediaUrl && !data.videoUrl) {
+    syncDebug("remote_state_ignored_empty_media", {
+      by,
+      actionId: data.actionId,
+      currentTime: Number(data.currentTime || 0),
+      isPlaying: !!data.isPlaying,
+    });
     return;
   }
   const updatedAtMs = Date.parse(data.updatedAt || "") || 0;
@@ -845,7 +881,9 @@ function applyRemoteState(data, by) {
   }
 
   const remoteMode = data.playMode === "audio" ? "audio" : "video";
-  setPlayMode(remoteMode, { silent: true });
+  if (state.playMode !== remoteMode) {
+    setPlayMode(remoteMode, { silent: true });
+  }
 
   state.suppressVideoEvents = true;
 
@@ -858,6 +896,10 @@ function applyRemoteState(data, by) {
   }
 
   const incomingUrl = normalizeUrl(data.videoUrl || "");
+  const incomingMediaPath = toMediaPath(data.videoUrl || "") || "";
+  if (incomingMediaPath) {
+    state.lastSyncedMediaPath = incomingMediaPath;
+  }
   const player = getActivePlayer();
   if (!incomingUrl) {
     state.activeMediaUrl = "";
@@ -876,6 +918,17 @@ function applyRemoteState(data, by) {
     ensureFilterShowsActiveItem("remote");
     renderMediaLibrary();
   }
+
+  syncDebug("remote_state_applied", {
+    by,
+    actionId: data.actionId,
+    incomingMode: remoteMode,
+    incomingVideoUrl: incomingMediaPath,
+    playerCurrentSrc: toMediaPath(player.currentSrc || player.src || "") || "",
+    currentTime: Number(data.currentTime || 0),
+    isPlaying: !!data.isPlaying,
+    controllerUserId: data.controllerUserId,
+  });
 
   const drift = Math.abs((player.currentTime || 0) - (data.currentTime || 0));
   let jumpedBySeek = false;
@@ -917,11 +970,26 @@ function sendSync() {
   const actionId = ++state.localActionCounter;
   state.lastLocalActionId = actionId;
   const player = getActivePlayer();
+  const activeItem = state.activeMediaId != null
+    ? state.mediaLibrary.find((item) => item.id === state.activeMediaId)
+    : state.mediaLibrary.find((item) => {
+      const modeUrl = resolveMediaUrlForMode(item, state.playMode);
+      return normalizeUrl(modeUrl) === normalizeUrl(state.activeMediaUrl);
+    });
+  const fallbackMediaPath = toMediaPath(resolveMediaUrlForMode(activeItem, state.playMode));
   const mediaPath =
     toMediaPath(player.currentSrc) ||
     toMediaPath(player.src) ||
-    toMediaPath(state.activeMediaUrl);
+    toMediaPath(state.activeMediaUrl) ||
+    fallbackMediaPath ||
+    state.lastSyncedMediaPath;
   if (!mediaPath) {
+    syncDebug("send_sync_skip_no_media", {
+      actionId,
+      canPush,
+      playerSrc: player.src || "",
+      playerCurrentSrc: player.currentSrc || "",
+    });
     return;
   }
   const payload = {
@@ -933,6 +1001,15 @@ function sendSync() {
     currentTime: Number(player.currentTime || 0),
     isPlaying: !player.paused,
   };
+  syncDebug("send_sync", {
+    actionId,
+    forceTakeover: !!state.forceTakeover,
+    canPush,
+    payloadVideoUrl: payload.videoUrl,
+    payloadMode: payload.playMode,
+    payloadTime: payload.currentTime,
+    payloadPlaying: payload.isPlaying,
+  });
   state.ws.send(JSON.stringify(payload));
   state.forceTakeover = false;
 }

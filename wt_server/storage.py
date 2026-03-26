@@ -5,6 +5,7 @@ import sqlite3
 from .config import (
     ALLOWED_VIDEO_EXTENSIONS,
     DB_PATH,
+    LOG_DEBUG_DIR,
     MEDIA_AUDIO_DIR,
     MEDIA_DIR,
     MEDIA_TMP_DIR,
@@ -18,6 +19,7 @@ def init_db() -> None:
     MEDIA_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
     # 兼容旧版本：如果历史文件直接放在 media 根目录，迁移到 media/video。
     for path in MEDIA_DIR.iterdir():
@@ -115,23 +117,31 @@ def init_db() -> None:
         """
     )
 
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(room_state)").fetchall()}
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(room_state)").fetchall()
+    }
     if "controller_user_id" not in columns:
         conn.execute("ALTER TABLE room_state ADD COLUMN controller_user_id INTEGER")
 
-    room_columns = {row[1] for row in conn.execute("PRAGMA table_info(rooms)").fetchall()}
+    room_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(rooms)").fetchall()
+    }
     if "password_salt" not in room_columns:
         conn.execute("ALTER TABLE rooms ADD COLUMN password_salt TEXT")
     if "password_hash" not in room_columns:
         conn.execute("ALTER TABLE rooms ADD COLUMN password_hash TEXT")
 
-    media_columns = {row[1] for row in conn.execute("PRAGMA table_info(media_assets)").fetchall()}
+    media_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(media_assets)").fetchall()
+    }
     if "cover_url" not in media_columns:
         conn.execute("ALTER TABLE media_assets ADD COLUMN cover_url TEXT")
     if "media_type" not in media_columns:
         conn.execute("ALTER TABLE media_assets ADD COLUMN media_type TEXT")
 
-    media_table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='media_assets'").fetchone()
+    media_table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='media_assets'"
+    ).fetchone()
     media_sql_text = (media_table_sql[0] or "") if media_table_sql else ""
     if "video_url TEXT NOT NULL UNIQUE" in media_sql_text:
         conn.executescript(
@@ -158,7 +168,9 @@ def init_db() -> None:
             """
         )
 
-    member_columns = {row[1] for row in conn.execute("PRAGMA table_info(room_members)").fetchall()}
+    member_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(room_members)").fetchall()
+    }
     if "room_password_cache" not in member_columns:
         conn.execute("ALTER TABLE room_members ADD COLUMN room_password_cache TEXT")
 

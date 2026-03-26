@@ -437,3 +437,46 @@
 ## 2026-03-24 19:24
 - Fixed admin footer version-label positioning mismatch root cause: admin page was still referencing stale stylesheet query version (`admin.css?v=20260324c`) while script/build tags were newer, so latest footer positioning CSS was not loaded.
 - Updated admin stylesheet reference to current version (`admin.css?v=20260324j`) to align with latest layout fixes.
+
+## 2026-03-26 09:10
+- Fixed a room-sync media divergence bug where some clients could incorrectly switch to another media item while playback time/state stayed synced; tightened frontend mode-switch behavior to avoid redundant source remap on remote sync packets.
+- Added sync debug logging system for troubleshooting multi-user room state drift:
+  - backend writes structured WS sync events to `log/debug/sync.log` with rotation (`watch_together.sync` logger),
+  - frontend prints structured sync traces in browser console with `[WT_SYNC]` prefix.
+- Added config switches/paths for sync logging in `wt_server/config.py`:
+  - `LOG_DEBUG_DIR`, `SYNC_LOG_FILE`,
+  - env flag `WATCH_SYNC_DEBUG` (default enabled).
+- Ensured debug log directory bootstrap on startup (`storage.init_db`).
+- Bumped user frontend cache/build version (`app.js?v=20260326a`, footer build label `20260326a`).
+
+## 2026-03-26 09:34
+- Fixed the remaining room-sync media mismatch root cause found from `sync.log`: some sync packets were still being sent with empty `videoUrl` when source switching/race occurred, which let peers keep old local media while only syncing time/play state.
+- Hardened client sync payload generation (`static/app.js`): `sendSync()` now falls back to active media library selection when `player.currentSrc/src` is temporarily empty, preventing blank-media sync packets.
+- Hardened remote apply behavior: when local client already has active media, any incoming state with empty `videoUrl` is ignored to avoid accidental media clearing/rebinding races.
+- Added explicit debug traces for ignored empty-media remote state and skipped sync-send due to missing media path.
+- Bumped user frontend cache/build version (`app.js?v=20260326b`, footer build label `20260326b`).
+
+## 2026-03-26 09:47
+- Fixed a regression that could make room sync appear "fully dead" after the previous hardening when clients had no stable media URL in player fields.
+- Added persistent client-side fallback `lastSyncedMediaPath` in `static/app.js`:
+  - updated whenever media is selected or remote valid media state arrives,
+  - used as final fallback in `sendSync()` when `currentSrc/src/activeMediaUrl` are temporarily unavailable.
+- Improved cross-mode media matching in `setPlayMode()` by matching active media against both `videoUrl` and `audioUrl` (instead of mode-limited URL only), reducing mode-switch source loss.
+- Synced media-path cache on mode-switch source assignment to keep subsequent sync payloads non-empty.
+- Bumped user frontend cache/build version (`app.js?v=20260326c`, footer build label `20260326c`).
+
+## 2026-03-26 10:03
+- Fixed a major media sync compatibility issue for newly imported/non-ASCII work names (e.g. Chinese titles): server media URL validation/parsing did not URL-decode path segments, causing valid encoded paths to be treated as missing and normalized to empty media URL.
+- Updated media URL splitter to decode URL path segments (`urllib.parse.unquote`) before filesystem existence checks in `wt_server/media.py`.
+- Root cause explained by behavior: older ASCII-named works (e.g. `mare260323`) synced normally, while newer non-ASCII works (e.g. `辉夜姬`) frequently produced empty `videoUrl` in sync state.
+- Bumped user frontend cache/build version (`app.js?v=20260326d`, footer build label `20260326d`) for clean client refresh after backend fix.
+
+## 2026-03-26 10:12
+- Reduced media cards size in room playback page left-side `Media Library` for better density and readability.
+- Updated card grid spacing and fixed card max width (`190px`), adjusted cover ratio (`16:10`) and compacted title line text/padding.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326e`, `app.js?v=20260326e`, footer build `20260326e`).
+
+## 2026-03-26 10:16
+- Adjusted media library card layout for responsive behavior: cards now adapt to container width with single-column full-width layout (`1 per row`) to avoid cards becoming too small on mobile.
+- Removed fixed compact card width cap and made media cards fill available column width.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326f`, `app.js?v=20260326f`, footer build `20260326f`).
