@@ -694,6 +694,18 @@ button.danger:hover {
   min-width: 0;
 }
 
+.audio-track-row {
+  margin: 0;
+}
+
+.audio-track-row label {
+  font-size: 12px;
+}
+
+.audio-track-row select {
+  min-width: 0;
+}
+
 .chat-column {
   margin-top: 0;
 }

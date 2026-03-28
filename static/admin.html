@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Admin</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260324j" />
+    <link rel="stylesheet" href="/static/admin.css?v=20260328d" />
   </head>
   <body>
     <div class="shell">
@@ -69,6 +69,19 @@
                     <input id="importCover" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
                   </label>
                 </div>
+                <div class="media-filter-row compact">
+                  <label for="importMode">Import Mode</label>
+                  <select id="importMode">
+                    <option value="create" selected>Create new work</option>
+                    <option value="append_audio">Append to audio album</option>
+                  </select>
+                </div>
+                <div id="appendTargetRow" class="media-filter-row compact hidden">
+                  <label for="appendTargetWork">Target Work</label>
+                  <select id="appendTargetWork">
+                    <option value="">Select audio-only work</option>
+                  </select>
+                </div>
                 <select id="importType" required>
                   <option value="">Select type</option>
                   <option value="movie">movie</option>
@@ -77,7 +90,7 @@
                   <option value="music">music</option>
                   <option value="shot">shot</option>
                 </select>
-                <p class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
+                <p id="importHint" class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
                 <button type="submit">Import Video/Audio</button>
                 <div id="adminImportProgressWrap" class="import-progress hidden" aria-live="polite">
                   <div class="import-progress-track">
@@ -127,10 +140,10 @@
       </div>
 
       <footer class="app-footer">
-        <span>Frontend Build: 20260324j</span>
+        <span>Frontend Build: 20260328d</span>
       </footer>
     </div>
 
-    <script type="module" src="/static/admin.js?v=20260324j" defer></script>
+    <script type="module" src="/static/admin.js?v=20260328d" defer></script>
   </body>
-  </html>
+</html>

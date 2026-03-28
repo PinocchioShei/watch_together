@@ -20,8 +20,8 @@ const state = {
   mediaLibrary: [],
   activeMediaUrl: "",
   activeMediaId: null,
+  activeTrackIndex: 0,
   lastSyncedMediaPath: "",
-  blockLocalSyncUntil: 0,
   playMode: "video",
   localActionCounter: 0,
   lastLocalActionId: 0,
@@ -57,6 +57,8 @@ const roomPanel = document.getElementById("roomPanel");
 const currentRoomTitle = document.getElementById("currentRoomTitle");
 const videoPlayer = document.getElementById("videoPlayer");
 const audioPlayer = document.getElementById("audioPlayer");
+const audioTrackRow = document.getElementById("audioTrackRow");
+const audioTrackSelect = document.getElementById("audioTrackSelect");
 const modeVideoBtn = document.getElementById("modeVideoBtn");
 const modeAudioBtn = document.getElementById("modeAudioBtn");
 const refreshMediaBtn = document.getElementById("refreshMediaBtn");
@@ -394,12 +396,116 @@ function getInactivePlayer() {
   return state.playMode === "audio" ? videoPlayer : audioPlayer;
 }
 
-function resolveMediaUrlForMode(item, mode) {
+function mediaUrlsMatch(left, right) {
+  const leftPath = canonicalMediaPath(left || "");
+  const rightPath = canonicalMediaPath(right || "");
+  if (leftPath && rightPath) {
+    return leftPath === rightPath;
+  }
+  return normalizeUrl(left || "") === normalizeUrl(right || "");
+}
+
+function getPureAudioTracks(item) {
+  if (!item || item.videoUrl || !Array.isArray(item.audioTracks)) {
+    return [];
+  }
+  return item.audioTracks.filter((trackUrl) => !!trackUrl);
+}
+
+function getTrackIndexForItem(item, url = "", fallbackIndex = null) {
+  const tracks = getPureAudioTracks(item);
+  if (!tracks.length) {
+    return 0;
+  }
+  const matchedIndex = tracks.findIndex((trackUrl) => mediaUrlsMatch(trackUrl, url));
+  if (matchedIndex >= 0) {
+    return matchedIndex;
+  }
+  const numeric = Number(fallbackIndex);
+  if (Number.isInteger(numeric)) {
+    return Math.max(0, Math.min(tracks.length - 1, numeric));
+  }
+  return 0;
+}
+
+function resolveMediaUrlForMode(item, mode, options = {}) {
   if (!item) return "";
   if (mode === "audio") {
+    const tracks = getPureAudioTracks(item);
+    if (tracks.length) {
+      return tracks[getTrackIndexForItem(item, "", options.trackIndex ?? 0)] || "";
+    }
     return item.audioUrl || "";
   }
   return item.videoUrl || "";
+}
+
+function mediaItemMatchesModeUrl(item, url, mode) {
+  if (!item || !url) {
+    return false;
+  }
+  if (mode === "audio") {
+    if (mediaUrlsMatch(item.audioUrl || "", url)) {
+      return true;
+    }
+    return getPureAudioTracks(item).some((trackUrl) => mediaUrlsMatch(trackUrl, url));
+  }
+  return mediaUrlsMatch(item.videoUrl || "", url);
+}
+
+function findMediaItemByUrl(url, mode = state.playMode) {
+  return state.mediaLibrary.find((item) => mediaItemMatchesModeUrl(item, url, mode)) || null;
+}
+
+function getActiveMediaItem() {
+  if (state.activeMediaId != null) {
+    return state.mediaLibrary.find((item) => item.id === state.activeMediaId) || null;
+  }
+  if (!state.activeMediaUrl) {
+    return null;
+  }
+  return findMediaItemByUrl(state.activeMediaUrl, state.playMode);
+}
+
+function getSyncSourceUrl(data, mode) {
+  if (mode === "audio") {
+    return data.videoUrl || data.audioUrl || "";
+  }
+  return data.videoUrl || "";
+}
+
+function getTrackLabel(trackUrl, index) {
+  const fallback = `Track ${index + 1}`;
+  const filename = String(trackUrl || "").split("/").pop() || fallback;
+  try {
+    return `${index + 1}. ${decodeURIComponent(filename)}`;
+  } catch {
+    return `${index + 1}. ${filename}`;
+  }
+}
+
+function renderAudioTrackSelector() {
+  if (!audioTrackRow || !audioTrackSelect) {
+    return;
+  }
+  const activeItem = state.playMode === "audio" ? getActiveMediaItem() : null;
+  const tracks = getPureAudioTracks(activeItem);
+  const shouldShow = tracks.length > 1;
+  audioTrackRow.classList.toggle("hidden", !shouldShow);
+  audioTrackSelect.disabled = !shouldShow;
+  audioTrackSelect.innerHTML = "";
+  if (!shouldShow) {
+    return;
+  }
+  const selectedIndex = getTrackIndexForItem(activeItem, state.activeMediaUrl, state.activeTrackIndex);
+  state.activeTrackIndex = selectedIndex;
+  tracks.forEach((trackUrl, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = getTrackLabel(trackUrl, index);
+    option.selected = index === selectedIndex;
+    audioTrackSelect.appendChild(option);
+  });
 }
 
 function normalizeMediaType(value) {
@@ -428,10 +534,7 @@ function ensureFilterShowsActiveItem(source = "") {
   if (!roomMediaTypeFilter) return;
   const selectedType = getRoomMediaFilterType();
   if (selectedType === "all") return;
-  const active = state.mediaLibrary.find((it) =>
-    (state.activeMediaId && it.id === state.activeMediaId) ||
-    (state.activeMediaUrl && normalizeUrl(resolveMediaUrlForMode(it, state.playMode)) === normalizeUrl(state.activeMediaUrl)),
-  );
+  const active = getActiveMediaItem();
   if (!active) return;
   const activeType = String(active.type || "movie");
   if (normalizeMediaType(activeType) !== selectedType) {
@@ -447,6 +550,11 @@ function setPlayMode(mode, { silent = false } = {}) {
   if (state.playMode === nextMode) {
     return;
   }
+  const activeItem = getActiveMediaItem();
+  if (nextMode === "video" && activeItem && !activeItem.videoUrl) {
+    setMediaStatus("Current work has no video track.", true);
+    return;
+  }
   state.playMode = nextMode;
   roomPanel.classList.toggle("audio-mode", nextMode === "audio");
   modeVideoBtn.classList.toggle("active", nextMode === "video");
@@ -456,15 +564,7 @@ function setPlayMode(mode, { silent = false } = {}) {
   const toPlayer = getActivePlayer();
   const wasPlaying = !fromPlayer.paused;
   const fromTime = Number(fromPlayer.currentTime || 0);
-  const activeItem = state.activeMediaId != null
-    ? state.mediaLibrary.find((item) => item.id === state.activeMediaId)
-    : state.mediaLibrary.find((item) => {
-      return (
-        normalizeUrl(item.videoUrl || "") === normalizeUrl(state.activeMediaUrl) ||
-        normalizeUrl(item.audioUrl || "") === normalizeUrl(state.activeMediaUrl)
-      );
-    });
-  const targetUrl = resolveMediaUrlForMode(activeItem, nextMode);
+  const targetUrl = resolveMediaUrlForMode(activeItem, nextMode, { trackIndex: state.activeTrackIndex });
   if (targetUrl && normalizeUrl(toPlayer.currentSrc || toPlayer.src) !== normalizeUrl(targetUrl)) {
     toPlayer.src = targetUrl;
     state.activeMediaUrl = targetUrl;
@@ -478,6 +578,7 @@ function setPlayMode(mode, { silent = false } = {}) {
     toPlayer.play().catch(() => {});
   }
   renderMediaLibrary();
+  renderAudioTrackSelector();
   if (!silent) {
     state.forceTakeover = true;
     state.localOverrideUntil = Date.now() + 1200;
@@ -506,11 +607,11 @@ function renderMediaLibrary() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "media-card";
-    const modeUrl = resolveMediaUrlForMode(item, state.playMode);
+    const modeUrl = resolveMediaUrlForMode(item, state.playMode, { trackIndex: 0 });
     const playable = !!modeUrl;
     if (
       (state.activeMediaId && state.activeMediaId === item.id) ||
-      (state.activeMediaUrl && normalizeUrl(modeUrl) === normalizeUrl(state.activeMediaUrl))
+      (state.activeMediaUrl && mediaItemMatchesModeUrl(item, state.activeMediaUrl, state.playMode))
     ) {
       btn.classList.add("active");
     }
@@ -551,18 +652,24 @@ function renderMediaLibrary() {
     }
     btn.onclick = async () => {
       if (!playable) return;
+      const requestedTrackIndex =
+        state.playMode === "audio" && state.activeMediaId && state.activeMediaId === item.id
+          ? getTrackIndexForItem(item, state.activeMediaUrl, state.activeTrackIndex)
+          : 0;
+      const selectedUrl = resolveMediaUrlForMode(item, state.playMode, { trackIndex: requestedTrackIndex });
       state.forceTakeover = true;
       state.localOverrideUntil = Date.now() + 1200;
-      state.blockLocalSyncUntil = 0;
       state.activeMediaId = item.id || null;
-      state.activeMediaUrl = modeUrl;
-      state.lastSyncedMediaPath = toMediaPath(modeUrl) || state.lastSyncedMediaPath;
+      state.activeTrackIndex = state.playMode === "audio" ? requestedTrackIndex : 0;
+      state.activeMediaUrl = selectedUrl;
+      state.lastSyncedMediaPath = toMediaPath(selectedUrl) || state.lastSyncedMediaPath;
       const player = getActivePlayer();
-      player.src = modeUrl;
+      player.src = selectedUrl;
       player.currentTime = 0;
       await player.play().catch(() => {});
       sendSync();
       renderMediaLibrary();
+      renderAudioTrackSelector();
       setMediaStatus(`Selected: ${item.name} (${state.playMode} mode)`);
     };
     li.appendChild(btn);
@@ -573,15 +680,14 @@ function renderMediaLibrary() {
 async function loadMediaLibrary() {
   const data = await api("/api/media", { method: "GET" });
   state.mediaLibrary = data.items || [];
-  if (state.activeMediaUrl && !state.activeMediaId) {
-    const found = state.mediaLibrary.find((item) => {
-      const modeUrl = resolveMediaUrlForMode(item, state.playMode);
-      return normalizeUrl(modeUrl) === normalizeUrl(state.activeMediaUrl);
-    });
+  if (state.activeMediaUrl) {
+    const found = getActiveMediaItem() || findMediaItemByUrl(state.activeMediaUrl, state.playMode);
     state.activeMediaId = found?.id || null;
+    state.activeTrackIndex = found ? getTrackIndexForItem(found, state.activeMediaUrl, state.activeTrackIndex) : 0;
   }
   ensureFilterShowsActiveItem();
   renderMediaLibrary();
+  renderAudioTrackSelector();
 }
 
 function showTab(which) {
@@ -663,9 +769,9 @@ function enterLobbyView(clearSavedRoom = true) {
   state.controllerUserId = null;
   state.roomDisplayNo = null;
   state.forceTakeover = false;
-  state.playMode = "video";
   state.activeMediaUrl = "";
   state.activeMediaId = null;
+  state.activeTrackIndex = 0;
   state.lastSyncedMediaPath = "";
   state.localOverrideUntil = 0;
   state.localActionCounter = 0;
@@ -679,6 +785,7 @@ function enterLobbyView(clearSavedRoom = true) {
   audioPlayer.removeAttribute("src");
   videoPlayer.load();
   audioPlayer.load();
+  state.playMode = "audio";
   setPlayMode("video", { silent: true });
   currentRoomTitle.textContent = "Room";
   if (clearSavedRoom) {
@@ -855,7 +962,9 @@ function connectWs(roomId) {
 }
 
 function applyRemoteState(data, by) {
-  if (state.activeMediaUrl && !data.videoUrl) {
+  const remoteMode = data.playMode === "audio" ? "audio" : "video";
+  const incomingSourceUrl = getSyncSourceUrl(data, remoteMode);
+  if (state.activeMediaUrl && !incomingSourceUrl) {
     syncDebug("remote_state_ignored_empty_media", {
       by,
       actionId: data.actionId,
@@ -892,13 +1001,11 @@ function applyRemoteState(data, by) {
     return;
   }
 
-  const remoteMode = data.playMode === "audio" ? "audio" : "video";
   if (state.playMode !== remoteMode) {
     setPlayMode(remoteMode, { silent: true });
   }
 
   state.suppressVideoEvents = true;
-  state.blockLocalSyncUntil = Date.now() + 1200;
 
   if (Object.prototype.hasOwnProperty.call(data, "controllerUserId")) {
     state.controllerUserId = data.controllerUserId;
@@ -908,9 +1015,9 @@ function applyRemoteState(data, by) {
     state.lastServerUpdatedAt = Math.max(state.lastServerUpdatedAt, updatedAtMs);
   }
 
-  const incomingUrl = normalizeUrl(data.videoUrl || "");
-  const incomingPathKey = canonicalMediaPath(data.videoUrl || "");
-  const incomingMediaPath = toMediaPath(data.videoUrl || "") || "";
+  const incomingUrl = normalizeUrl(incomingSourceUrl || "");
+  const incomingPathKey = canonicalMediaPath(incomingSourceUrl || "");
+  const incomingMediaPath = toMediaPath(incomingSourceUrl || "") || "";
   if (incomingMediaPath) {
     state.lastSyncedMediaPath = incomingMediaPath;
   }
@@ -920,22 +1027,31 @@ function applyRemoteState(data, by) {
   if (!incomingUrl) {
     state.activeMediaUrl = "";
     state.activeMediaId = null;
+    state.activeTrackIndex = 0;
     renderMediaLibrary();
+    renderAudioTrackSelector();
   }
   const currentUrl = normalizeUrl(player.getAttribute("src") || player.currentSrc || "");
   const currentPathKey = canonicalMediaPath(player.getAttribute("src") || player.currentSrc || "");
   let sourceChanged = false;
   if (incomingUrl && currentUrl !== incomingUrl && incomingPathKey !== currentPathKey) {
-    state.activeMediaUrl = data.videoUrl;
-    const media = state.mediaLibrary.find((item) => {
-      const modeUrl = resolveMediaUrlForMode(item, state.playMode);
-      return canonicalMediaPath(modeUrl) === incomingPathKey;
-    });
+    state.activeMediaUrl = incomingSourceUrl;
+    const media = findMediaItemByUrl(incomingSourceUrl, remoteMode);
     state.activeMediaId = media?.id || null;
+    state.activeTrackIndex = media ? getTrackIndexForItem(media, incomingSourceUrl, data.trackIndex) : 0;
     player.src = incomingUrl;
     sourceChanged = true;
     ensureFilterShowsActiveItem("remote");
     renderMediaLibrary();
+    renderAudioTrackSelector();
+  } else if (incomingUrl) {
+    const media = state.activeMediaId != null
+      ? state.mediaLibrary.find((item) => item.id === state.activeMediaId) || findMediaItemByUrl(incomingSourceUrl, remoteMode)
+      : findMediaItemByUrl(incomingSourceUrl, remoteMode);
+    state.activeMediaId = media?.id || null;
+    state.activeMediaUrl = incomingSourceUrl;
+    state.activeTrackIndex = media ? getTrackIndexForItem(media, incomingSourceUrl, data.trackIndex) : 0;
+    renderAudioTrackSelector();
   }
 
   syncDebug("remote_state_applied", {
@@ -943,6 +1059,7 @@ function applyRemoteState(data, by) {
     actionId: data.actionId,
     incomingMode: remoteMode,
     incomingVideoUrl: incomingMediaPath,
+    trackIndex: data.trackIndex,
     playerCurrentSrc: toMediaPath(player.currentSrc || player.src || "") || "",
     currentTime: Number(data.currentTime || 0),
     isPlaying: !!data.isPlaying,
@@ -1010,13 +1127,8 @@ function sendSync() {
   const actionId = ++state.localActionCounter;
   state.lastLocalActionId = actionId;
   const player = getActivePlayer();
-  const activeItem = state.activeMediaId != null
-    ? state.mediaLibrary.find((item) => item.id === state.activeMediaId)
-    : state.mediaLibrary.find((item) => {
-      const modeUrl = resolveMediaUrlForMode(item, state.playMode);
-      return normalizeUrl(modeUrl) === normalizeUrl(state.activeMediaUrl);
-    });
-  const fallbackMediaPath = toMediaPath(resolveMediaUrlForMode(activeItem, state.playMode));
+  const activeItem = getActiveMediaItem();
+  const fallbackMediaPath = toMediaPath(resolveMediaUrlForMode(activeItem, state.playMode, { trackIndex: state.activeTrackIndex }));
   const mediaPath =
     toMediaPath(player.currentSrc) ||
     toMediaPath(player.src) ||
@@ -1041,11 +1153,16 @@ function sendSync() {
     currentTime: Number(player.currentTime || 0),
     isPlaying: !player.paused,
   };
+  const audioTracks = getPureAudioTracks(activeItem);
+  if (state.playMode === "audio" && audioTracks.length) {
+    payload.trackIndex = getTrackIndexForItem(activeItem, mediaPath, state.activeTrackIndex);
+  }
   syncDebug("send_sync", {
     actionId,
     forceTakeover: !!state.forceTakeover,
     canPush,
     payloadVideoUrl: payload.videoUrl,
+    payloadTrackIndex: payload.trackIndex,
     payloadMode: payload.playMode,
     payloadTime: payload.currentTime,
     payloadPlaying: payload.isPlaying,
@@ -1056,9 +1173,8 @@ function sendSync() {
 
 function scheduleSync() {
   if (state.suppressVideoEvents) return;
-  if (Date.now() < state.blockLocalSyncUntil) return;
   clearTimeout(state.syncTimer);
-  state.syncTimer = setTimeout(sendSync, state.forceTakeover ? 40 : 120);
+  state.syncTimer = setTimeout(sendSync, state.forceTakeover ? 20 : 60);
 }
 
 function onLocalPlaybackAction(event) {
@@ -1074,15 +1190,8 @@ function onLocalPlaybackAction(event) {
     });
     return;
   }
-  if (Date.now() < state.blockLocalSyncUntil) {
-    syncDebug("skip_event_while_remote_sync_window", {
-      eventType: event?.type || "unknown",
-      waitMs: state.blockLocalSyncUntil - Date.now(),
-    });
-    return;
-  }
   state.forceTakeover = true;
-  state.localOverrideUntil = Date.now() + 1200;
+  state.localOverrideUntil = Date.now() + 450;
   scheduleSync();
 }
 
@@ -1183,6 +1292,48 @@ modeAudioBtn.onclick = () => {
   setPlayMode("audio");
   setMediaStatus("Switched to audio mode.");
 };
+
+if (audioTrackSelect) {
+  audioTrackSelect.onchange = async () => {
+    if (state.playMode !== "audio") {
+      return;
+    }
+    const activeItem = getActiveMediaItem();
+    const tracks = getPureAudioTracks(activeItem);
+    if (tracks.length < 2) {
+      return;
+    }
+    const requestedIndex = Number(audioTrackSelect.value || 0);
+    const nextIndex = getTrackIndexForItem(activeItem, tracks[requestedIndex] || "", requestedIndex);
+    const nextUrl = tracks[nextIndex] || "";
+    if (!nextUrl || mediaUrlsMatch(nextUrl, state.activeMediaUrl)) {
+      renderAudioTrackSelector();
+      return;
+    }
+    const player = audioPlayer;
+    const wasPlaying = !player.paused;
+    state.forceTakeover = true;
+    state.localOverrideUntil = Date.now() + 1200;
+    state.activeMediaId = activeItem?.id || null;
+    state.activeTrackIndex = nextIndex;
+    state.activeMediaUrl = nextUrl;
+    state.lastSyncedMediaPath = toMediaPath(nextUrl) || state.lastSyncedMediaPath;
+    player.src = nextUrl;
+    try {
+      player.currentTime = 0;
+    } catch {
+    }
+    renderMediaLibrary();
+    renderAudioTrackSelector();
+    if (wasPlaying) {
+      await player.play().catch(() => {});
+    } else {
+      player.pause();
+    }
+    sendSync();
+    setMediaStatus(`Selected ${getTrackLabel(nextUrl, nextIndex)}.`);
+  };
+}
 
 ["play", "pause", "seeked", "ratechange"].forEach((evt) => {
   videoPlayer.addEventListener(evt, onLocalPlaybackAction);

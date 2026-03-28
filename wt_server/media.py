@@ -116,6 +116,15 @@ def _find_first_media_file(
     return sorted(files, key=lambda p: p.name.lower())[0]
 
 
+def _list_media_files(work_dir: Path, ext_set: set[str]) -> list[Path]:
+    if not work_dir.exists() or not work_dir.is_dir():
+        return []
+    files = [
+        p for p in work_dir.iterdir() if p.is_file() and p.suffix.lower() in ext_set
+    ]
+    return sorted(files, key=lambda p: p.name.lower())
+
+
 def _guess_media_type(title: str) -> str:
     text = (title or "").lower()
     if any(k in text for k in ["asmr", "睡", "耳", "舔", "voice"]):
@@ -147,14 +156,79 @@ def _read_work_meta(work_dir: Path) -> dict[str, Any]:
         return {}
 
 
-def _write_work_meta(work_dir: Path, media_type: str, title: str = "") -> None:
+def _write_work_meta(
+    work_dir: Path,
+    media_type: str,
+    title: str = "",
+    extra: dict[str, Any] | None = None,
+) -> None:
     path = _work_meta_path(work_dir)
+    old_meta = _read_work_meta(work_dir)
     payload = {
         "mediaType": media_type,
         "title": title or work_dir.name,
         "updatedAt": dt_to_str(now_utc()),
     }
+    if extra:
+        payload.update(extra)
+    if "audioTrackOrder" in old_meta and "audioTrackOrder" not in payload:
+        payload["audioTrackOrder"] = old_meta["audioTrackOrder"]
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _ordered_audio_names_from_meta(work_dir: Path) -> list[str]:
+    meta = _read_work_meta(work_dir)
+    raw = meta.get("audioTrackOrder")
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name or "/" in name or "\\" in name:
+            continue
+        if Path(name).suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
+            continue
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _list_ordered_audio_files(work_dir: Path) -> list[Path]:
+    audio_files = _list_media_files(work_dir, ALLOWED_AUDIO_EXTENSIONS)
+    if not audio_files:
+        return []
+    by_name = {p.name: p for p in audio_files}
+    ordered_names = _ordered_audio_names_from_meta(work_dir)
+    ordered_files = [by_name[name] for name in ordered_names if name in by_name]
+    remaining = [p for p in audio_files if p.name not in ordered_names]
+    return ordered_files + remaining
+
+
+def _update_audio_track_order(work_dir: Path, ordered_files: list[Path]) -> None:
+    meta = _read_work_meta(work_dir)
+    _write_work_meta(
+        work_dir,
+        (meta.get("mediaType") or _guess_media_type(work_dir.name)),
+        title=(meta.get("title") or work_dir.name),
+        extra={"audioTrackOrder": [p.name for p in ordered_files]},
+    )
+
+
+def _allocate_append_audio_filename(work_dir: Path, original_name: str) -> str:
+    suffix = Path(original_name or "").suffix.lower() or ".m4a"
+    base = sanitize_filename_stem(Path(original_name or "track").stem)
+    candidate = f"{base}{suffix}"
+    existing = {p.name for p in work_dir.iterdir() if p.is_file()}
+    if candidate not in existing:
+        return candidate
+    index = 2
+    while True:
+        candidate = f"{base}_{index}{suffix}"
+        if candidate not in existing:
+            return candidate
+        index += 1
 
 
 def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
@@ -360,14 +434,30 @@ def collect_media_files() -> dict[str, dict[str, Any]]:
         if not work_dir.is_dir():
             continue
         video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
+        audio_files = _list_ordered_audio_files(work_dir)
         audio_file = _find_first_media_file(work_dir, ALLOWED_AUDIO_EXTENSIONS, "audio")
-        if not video_file and not audio_file:
+        if not video_file and not audio_files:
             continue
+        is_pure_audio_work = not video_file and bool(audio_files)
+        audio_tracks = (
+            [media_url_from_work(work_dir.name, p.name) for p in audio_files]
+            if is_pure_audio_work
+            else []
+        )
+        default_audio_url = (
+            audio_tracks[0]
+            if audio_tracks
+            else (
+                media_url_from_work(work_dir.name, audio_file.name)
+                if audio_file
+                else ""
+            )
+        )
         stat_candidates = [p for p in work_dir.iterdir() if p.is_file()]
         if not stat_candidates:
             continue
         latest_mtime = max(p.stat().st_mtime for p in stat_candidates)
-        stat_size_target = video_file or audio_file
+        stat_size_target = video_file or (audio_files[0] if audio_files else None)
         if not stat_size_target:
             continue
         assert stat_size_target is not None
@@ -376,9 +466,8 @@ def collect_media_files() -> dict[str, dict[str, Any]]:
             "videoUrl": media_url_from_work(work_dir.name, video_file.name)
             if video_file
             else "",
-            "audioUrl": media_url_from_work(work_dir.name, audio_file.name)
-            if audio_file
-            else "",
+            "audioUrl": default_audio_url,
+            "audioTracks": audio_tracks,
             "coverUrl": _resolve_cover_url(work_dir.name),
             "size": stat_size,
             "updatedAt": dt_to_str(datetime.fromtimestamp(latest_mtime, timezone.utc)),
@@ -422,6 +511,8 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "updatedAt": file_meta["updatedAt"],
             }
         )
+        if file_meta.get("audioTracks"):
+            items[-1]["audioTracks"] = file_meta["audioTracks"]
 
     for stem, file_meta in file_index.items():
         if stem in seen_stems:
@@ -440,7 +531,44 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "updatedAt": file_meta["updatedAt"],
             }
         )
+        if file_meta.get("audioTracks"):
+            items[-1]["audioTracks"] = file_meta["audioTracks"]
 
+    items.sort(key=lambda item: item["updatedAt"], reverse=True)
+    return items
+
+
+def list_appendable_audio_works() -> list[dict[str, Any]]:
+    MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
+    items: list[dict[str, Any]] = []
+    for work_dir in MEDIA_WORK_SUBDIR.iterdir():
+        if not work_dir.is_dir():
+            continue
+        video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
+        if video_file:
+            continue
+        meta = _read_work_meta(work_dir)
+        audio_files = _list_ordered_audio_files(work_dir)
+        if not meta and not audio_files:
+            continue
+        stat_candidates = [p for p in work_dir.iterdir() if p.is_file()]
+        latest_mtime = (
+            max(p.stat().st_mtime for p in stat_candidates) if stat_candidates else 0
+        )
+        items.append(
+            {
+                "workKey": work_dir.name,
+                "name": meta.get("title") or work_dir.name,
+                "type": meta.get("mediaType") or _guess_media_type(work_dir.name),
+                "trackCount": len(audio_files),
+                "coverUrl": _resolve_cover_url(work_dir.name),
+                "updatedAt": (
+                    dt_to_str(datetime.fromtimestamp(latest_mtime, timezone.utc))
+                    if latest_mtime
+                    else meta.get("updatedAt") or dt_to_str(now_utc())
+                ),
+            }
+        )
     items.sort(key=lambda item: item["updatedAt"], reverse=True)
     return items
 
@@ -453,6 +581,36 @@ def stem_from_media_url(url: str) -> str:
     if kind == "work":
         return work_key
     return Path(filename).stem
+
+
+def derive_audio_track_index(url: str) -> int | None:
+    split = _split_media_url(url)
+    if not split:
+        return None
+
+    kind, work_key, _filename = split
+    if kind != "work" or not work_key:
+        return None
+
+    work_dir = MEDIA_WORK_SUBDIR / work_key
+    if not work_dir.exists() or not work_dir.is_dir():
+        return None
+
+    video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
+    if video_file:
+        return None
+
+    audio_files = _list_ordered_audio_files(work_dir)
+    if not audio_files:
+        return None
+
+    audio_tracks = [media_url_from_work(work_key, p.name) for p in audio_files]
+    normalized_url = unquote(url)
+    normalized_tracks = [unquote(track_url) for track_url in audio_tracks]
+    try:
+        return normalized_tracks.index(normalized_url)
+    except ValueError:
+        return 0
 
 
 def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
@@ -644,7 +802,11 @@ def allocate_media_stem(original_stem: str) -> str:
 
 
 async def import_media_file(
-    file: UploadFile, media_type: str, cover: UploadFile | None = None
+    file: UploadFile,
+    media_type: str,
+    cover: UploadFile | None = None,
+    import_mode: str = "create",
+    target_work_key: str = "",
 ) -> dict[str, Any]:
     """导入本地视频/音频，输出 work/<title>/video|audio 资源并入库。"""
     suffix = Path(file.filename or "").suffix.lower()
@@ -653,8 +815,174 @@ async def import_media_file(
             status_code=400, detail="Only supported video/audio formats are allowed"
         )
 
+    import_mode = (import_mode or "create").strip().lower()
+    if import_mode not in {"create", "append_audio"}:
+        raise HTTPException(status_code=422, detail="Invalid import mode")
+
     ensure_ffmpeg_tools()
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
+
+    if import_mode == "append_audio":
+        if cover is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Append mode does not accept cover uploads",
+            )
+        work_key = sanitize_filename_stem(target_work_key)
+        if not work_key or work_key != (target_work_key or "").strip():
+            raise HTTPException(status_code=422, detail="Invalid append target")
+        work_dir = MEDIA_WORK_SUBDIR / work_key
+        if not work_dir.exists() or not work_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Append target not found")
+
+        video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
+        if video_file:
+            raise HTTPException(
+                status_code=409,
+                detail="Append mode is only available for audio-only works",
+            )
+
+        source_stem = Path(file.filename or "track").stem
+        raw_name = f"raw_append_{work_key}_{secrets.token_hex(4)}{suffix}"
+        raw_path = MEDIA_TMP_DIR / raw_name
+        max_size = int(1.5 * 1024 * 1024 * 1024)
+        size = 0
+        with raw_path.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_size:
+                    out.close()
+                    raw_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413, detail="File too large, max 1.5GB"
+                    )
+                out.write(chunk)
+        await file.close()
+
+        probe_result = await asyncio.to_thread(probe_media, raw_path)
+        profile = extract_media_profile(probe_result)
+        try:
+            duration = float((probe_result.get("format") or {}).get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        streams = probe_result.get("streams") or []
+        has_video = any(
+            s.get("codec_type") == "video"
+            and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+            for s in streams
+        )
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
+        if has_video or not has_audio:
+            raw_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=400,
+                detail="Append mode only accepts audio-only files",
+            )
+
+        media_type = (media_type or "").strip()
+        existing_meta = _read_work_meta(work_dir)
+        effective_media_type = (
+            existing_meta.get("mediaType") or media_type or _guess_media_type(work_key)
+        )
+        if effective_media_type not in MEDIA_TYPE_OPTIONS:
+            raw_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail="Invalid media type")
+
+        audio_name = _allocate_append_audio_filename(work_dir, f"{source_stem}.m4a")
+        audio_path = work_dir / audio_name
+        audio_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(raw_path),
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            str(audio_path),
+        ]
+        audio_proc = await asyncio.create_subprocess_exec(
+            *audio_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, audio_err = await audio_proc.communicate()
+        raw_path.unlink(missing_ok=True)
+        if audio_proc.returncode != 0:
+            audio_path.unlink(missing_ok=True)
+            detail = audio_err.decode("utf-8", errors="ignore")[-400:]
+            raise HTTPException(
+                status_code=500,
+                detail=f"Audio import failed: {detail or 'unknown error'}",
+            )
+
+        ordered_audio_files = _list_ordered_audio_files(work_dir)
+        if audio_path not in ordered_audio_files:
+            ordered_audio_files.append(audio_path)
+        _update_audio_track_order(work_dir, ordered_audio_files)
+
+        cover_url = _resolve_cover_url(work_key)
+        now_str = dt_to_str(now_utc())
+        title = existing_meta.get("title") or work_key
+        audio_url = media_url_from_work(work_key, ordered_audio_files[0].name)
+        conn = db_conn()
+        try:
+            match = conn.execute(
+                "SELECT id, created_at FROM media_assets WHERE video_url LIKE ? OR audio_url LIKE ? ORDER BY updated_at DESC LIMIT 1",
+                (f"/media/work/{work_key}/%", f"/media/work/{work_key}/%"),
+            ).fetchone()
+            payload = (
+                title,
+                "",
+                audio_url,
+                cover_url,
+                effective_media_type,
+                duration,
+                max(
+                    (p.stat().st_size for p in ordered_audio_files),
+                    default=audio_path.stat().st_size,
+                ),
+                (match["created_at"] if match and match["created_at"] else now_str),
+                now_str,
+            )
+            if match:
+                conn.execute(
+                    """
+                    UPDATE media_assets
+                    SET title = ?, video_url = ?, audio_url = ?, cover_url = ?, media_type = ?, duration = ?, size = ?, created_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (*payload, match["id"]),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    payload,
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "videoUrl": "",
+            "audioUrl": audio_url,
+            "coverUrl": cover_url,
+            "type": effective_media_type,
+            "profile": profile,
+            "transcoded": True,
+            "imported": True,
+            "appendMode": True,
+            "targetWorkKey": work_key,
+            "appendedTrackUrl": media_url_from_work(work_key, audio_name),
+        }
 
     source_stem = Path(file.filename or "media").stem
     media_stem = allocate_media_stem(source_stem)

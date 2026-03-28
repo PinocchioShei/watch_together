@@ -24,6 +24,12 @@ const mediaDetailType = document.getElementById("mediaDetailType");
 const mediaDetailRename = document.getElementById("mediaDetailRename");
 const mediaDetailDelete = document.getElementById("mediaDetailDelete");
 const mediaTypeFilter = document.getElementById("mediaTypeFilter");
+const importModeSelect = document.getElementById("importMode");
+const appendTargetRow = document.getElementById("appendTargetRow");
+const appendTargetWorkSelect = document.getElementById("appendTargetWork");
+const importTypeSelect = document.getElementById("importType");
+const importCoverInput = document.getElementById("importCover");
+const importHint = document.getElementById("importHint");
 const themeToggleBtn = document.getElementById("themeToggleBtn");
 const adminImportProgressWrap = document.getElementById("adminImportProgressWrap");
 const adminImportProgressBar = document.getElementById("adminImportProgressBar");
@@ -35,6 +41,8 @@ const tabPanels = {
   rooms: document.getElementById("tab-rooms"),
 };
 let mediaItems = [];
+let allMediaItems = [];
+let appendableAudioWorks = [];
 let activeMediaItem = null;
 let adminImportProcessingTimer = null;
 let selectedImportFileStamp = "";
@@ -109,6 +117,18 @@ function formatImportError(detail) {
   if (lower.includes("transcode failed") || lower.includes("audio import failed")) {
     return `Import failed during ffmpeg processing. ${msg}`;
   }
+  if (lower.includes("append mode does not accept cover uploads")) {
+    return "Append failed: cover upload is not supported in append mode.";
+  }
+  if (lower.includes("append target not found")) {
+    return "Append failed: selected audio-only work no longer exists.";
+  }
+  if (lower.includes("append mode is only available for audio-only works")) {
+    return "Append failed: target must be an existing audio-only work.";
+  }
+  if (lower.includes("append mode only accepts audio-only files")) {
+    return "Append failed: only audio-only files can be appended to an audio album.";
+  }
   return `Import failed: ${msg}`;
 }
 
@@ -131,6 +151,78 @@ function parseWorkPath(url) {
   return { work: m[1], file: m[2] };
 }
 
+function getTrackLabel(trackUrl, index) {
+  const fallback = `Track ${index + 1}`;
+  const filename = String(trackUrl || "").split("/").pop() || fallback;
+  try {
+    return `${index + 1}. ${decodeURIComponent(filename)}`;
+  } catch {
+    return `${index + 1}. ${filename}`;
+  }
+}
+
+function isPureAudioAlbum(item) {
+  return !!item && !item.videoUrl && Array.isArray(item.audioTracks) && item.audioTracks.length > 0;
+}
+
+function getWorkKey(item) {
+  const v = parseWorkPath(item?.videoUrl || "");
+  const a = parseWorkPath(item?.audioUrl || "");
+  return v.work !== "-" ? v.work : a.work;
+}
+
+function refreshAppendTargetOptions() {
+  if (!appendTargetWorkSelect) return;
+  const previous = appendTargetWorkSelect.value;
+  const albums = [...appendableAudioWorks]
+    .sort((a, b) => String(a.name || a.workKey).localeCompare(String(b.name || b.workKey), "zh-CN"));
+  appendTargetWorkSelect.innerHTML = '<option value="">Select audio-only work</option>';
+  albums.forEach((item) => {
+    const workKey = item.workKey || getWorkKey(item);
+    if (!workKey || workKey === "-" || workKey === "legacy") return;
+    const option = document.createElement("option");
+    option.value = workKey;
+    const countText = Number(item.trackCount || 0) > 0 ? `${item.trackCount} tracks` : "0 tracks";
+    option.textContent = `${item.name || workKey} (${workKey}, ${countText})`;
+    appendTargetWorkSelect.appendChild(option);
+  });
+  if (previous && Array.from(appendTargetWorkSelect.options).some((opt) => opt.value === previous)) {
+    appendTargetWorkSelect.value = previous;
+  } else if (!appendTargetWorkSelect.value && appendTargetWorkSelect.options.length > 1) {
+    appendTargetWorkSelect.value = appendTargetWorkSelect.options[1].value;
+  }
+}
+
+function refreshImportModeUI() {
+  const appendMode = importModeSelect?.value === "append_audio";
+  if (appendTargetRow) appendTargetRow.classList.toggle("hidden", !appendMode);
+  if (appendTargetWorkSelect) {
+    appendTargetWorkSelect.disabled = !appendMode;
+    if (appendMode && !appendTargetWorkSelect.value && appendTargetWorkSelect.options.length > 1) {
+      appendTargetWorkSelect.value = appendTargetWorkSelect.options[1].value;
+    }
+  }
+  if (importCoverInput) {
+    importCoverInput.disabled = appendMode;
+    if (appendMode) {
+      importCoverInput.value = "";
+    }
+  }
+  if (importTypeSelect) {
+      importTypeSelect.disabled = appendMode;
+    if (appendMode) {
+      const targetItem = appendableAudioWorks.find((item) => item.workKey === appendTargetWorkSelect?.value)
+        || allMediaItems.find((item) => getWorkKey(item) === appendTargetWorkSelect?.value);
+      importTypeSelect.value = targetItem?.type || "music";
+    }
+  }
+  if (importHint) {
+    importHint.textContent = appendMode
+      ? "Append mode only accepts audio-only files and existing audio-only works. Cover upload is disabled."
+      : "Type is required. Media accepts video/audio formats; cover accepts jpg/png.";
+  }
+}
+
 function closeMediaDetail() {
   activeMediaItem = null;
   if (!mediaDetailOverlay) return;
@@ -144,7 +236,7 @@ function openMediaDetail(item) {
   const a = parseWorkPath(item.audioUrl || "");
   const workFolder = v.work !== "-" ? v.work : a.work;
   const cover = item.coverUrl || "";
-  mediaDetailBody.innerHTML = [
+  const rows = [
     ["_cover", cover],
     ["Work", workFolder || item.name || "-"],
     ["Type", item.type || "movie"],
@@ -156,7 +248,13 @@ function openMediaDetail(item) {
     ["Size", formatBytes(item.size || 0)],
     ["Duration", `${Math.round(Number(item.duration || 0))}s`],
     ["Updated At", item.updatedAt || "-"],
-  ].map(([k, val]) => {
+  ];
+  if (!item.videoUrl && Array.isArray(item.audioTracks) && item.audioTracks.length) {
+    item.audioTracks.forEach((trackUrl, index) => {
+      rows.push([getTrackLabel(trackUrl, index), trackUrl || "-"]);
+    });
+  }
+  mediaDetailBody.innerHTML = rows.map(([k, val]) => {
     if (k === "_cover") {
       return `<img class="media-detail-cover" src="${escapeHtml(String(val || ""))}" alt="cover" loading="lazy" />`;
     }
@@ -365,6 +463,25 @@ if (adminImportFileInput) {
   });
 }
 
+if (importModeSelect) {
+  importModeSelect.addEventListener("change", async () => {
+    if (importModeSelect.value === "append_audio") {
+      try {
+        await loadAppendTargets();
+      } catch (err) {
+        setImportMsg(err?.message || "Failed to load append targets.", true);
+      }
+    }
+    refreshImportModeUI();
+  });
+}
+
+if (appendTargetWorkSelect) {
+  appendTargetWorkSelect.addEventListener("change", () => {
+    refreshImportModeUI();
+  });
+}
+
 async function loadOverview() {
   const data = await api("/api/admin/overview", { method: "GET" });
   document.getElementById("metricUsers").textContent = data.users;
@@ -410,6 +527,9 @@ async function loadUsers() {
 async function loadMedia() {
   const data = await api("/api/admin/media", { method: "GET" });
   const rows = data.items || [];
+  allMediaItems = rows;
+  refreshAppendTargetOptions();
+  refreshImportModeUI();
   const selectedType = mediaTypeFilter ? (mediaTypeFilter.value || "movie") : "movie";
   const visible = selectedType === "all"
     ? rows
@@ -517,6 +637,13 @@ async function loadMedia() {
   }
 }
 
+async function loadAppendTargets() {
+  const data = await api("/api/admin/media/append-targets", { method: "GET" });
+  appendableAudioWorks = data.items || [];
+  refreshAppendTargetOptions();
+  refreshImportModeUI();
+}
+
 async function loadRooms() {
   const data = await api("/api/admin/rooms", { method: "GET" });
   const rows = data.items || [];
@@ -538,7 +665,7 @@ async function loadRooms() {
 }
 
 async function bootstrapDashboard() {
-  await Promise.all([loadOverview(), loadUsers(), loadMedia(), loadRooms()]);
+  await Promise.all([loadOverview(), loadUsers(), loadMedia(), loadAppendTargets(), loadRooms()]);
   setActiveTab("users");
 }
 
@@ -609,6 +736,7 @@ document.getElementById("refreshUsers").onclick = async () => {
 
 document.getElementById("refreshMedia").onclick = async () => {
   await loadMedia();
+  await loadAppendTargets();
   await loadOverview();
 };
 
@@ -659,11 +787,17 @@ document.getElementById("importForm").onsubmit = async (e) => {
   const fileInput = document.getElementById("importFile");
   const typeSelect = document.getElementById("importType");
   const coverInput = document.getElementById("importCover");
+  const appendMode = importModeSelect?.value === "append_audio";
+  const targetWorkKey = appendTargetWorkSelect?.value || "";
   if (!fileInput.files || !fileInput.files[0]) {
     setImportMsg("Choose a file first.", true);
     return;
   }
-  if (!typeSelect.value) {
+  if (appendMode && !targetWorkKey) {
+    setImportMsg("Choose an existing audio-only work first.", true);
+    return;
+  }
+  if (!appendMode && !typeSelect.value) {
     setImportMsg("Choose media type first.", true);
     return;
   }
@@ -680,13 +814,17 @@ document.getElementById("importForm").onsubmit = async (e) => {
     setImportMsg("Importing and transcoding...");
     const fd = new FormData();
     fd.append("file", selectedFile);
-    fd.append("media_type", typeSelect.value);
-    if (coverInput.files && coverInput.files[0]) {
+    fd.append("import_mode", appendMode ? "append_audio" : "create");
+    fd.append("media_type", appendMode ? (typeSelect.value || "music") : typeSelect.value);
+    if (appendMode) {
+      fd.append("target_work_key", targetWorkKey);
+    }
+    if (!appendMode && coverInput.files && coverInput.files[0]) {
       fd.append("cover", coverInput.files[0]);
     }
     const data = await xhrUpload("/api/admin/import", fd, () => {
       startAdminImportProcessingTicker(estimatedSeconds);
-      setImportMsg(`Upload finished. Server is processing/transcoding media (~${estimatedSeconds}s estimate), please wait...`);
+      setImportMsg(`${appendMode ? "Upload finished. Server is appending/transcoding audio" : "Upload finished. Server is processing/transcoding media"} (~${estimatedSeconds}s estimate), please wait...`);
     });
     stopAdminImportProcessingTicker();
     const profile = data.profile || {};
@@ -694,12 +832,19 @@ document.getElementById("importForm").onsubmit = async (e) => {
     setAdminImportProgress(100, `Server processing complete (${expectedStage}). Finalizing...`);
     const mode = data.videoUrl ? "video/audio" : "audio-only";
     const transcodeText = data.transcoded ? "transcoded" : "direct import";
-    setImportMsg(
-      `Imported (${mode}, ${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
-    );
+    if (appendMode) {
+      setImportMsg(
+        `Appended track to ${data.targetWorkKey || targetWorkKey} (${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
+      );
+    } else {
+      setImportMsg(
+        `Imported (${mode}, ${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
+      );
+    }
     fileInput.value = "";
     coverInput.value = "";
     await loadMedia();
+    await loadAppendTargets();
     await loadOverview();
     setTimeout(hideAdminImportProgress, 1200);
   } catch (err) {

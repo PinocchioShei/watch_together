@@ -10,6 +10,7 @@ from fastapi import (
     Depends,
     FastAPI,
     File,
+    Form,
     HTTPException,
     Request,
     UploadFile,
@@ -41,9 +42,11 @@ from .config import (
 from .media import (
     backfill_work_meta,
     collect_media_files,
+    derive_audio_track_index,
     import_media_file,
     is_audio_media_url,
     is_valid_media_url,
+    list_appendable_audio_works,
     list_media_library,
     migrate_media_layout,
     normalize_media_url,
@@ -95,6 +98,13 @@ def safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def attach_track_index(payload: dict, media_url: str) -> dict:
+    track_index = derive_audio_track_index(media_url)
+    if track_index is not None:
+        payload["trackIndex"] = track_index
+    return payload
 
 
 def get_admin_row(conn: sqlite3.Connection):
@@ -378,6 +388,10 @@ def create_app() -> FastAPI:
             visible_items.append(item)
         return {"items": visible_items}
 
+    @app.get("/api/admin/media/append-targets")
+    def admin_append_targets(_: str = Depends(require_admin)):
+        return {"items": list_appendable_audio_works()}
+
     @app.get("/api/admin/rooms")
     async def admin_rooms(_: str = Depends(require_admin)):
         conn = db_conn()
@@ -533,11 +547,15 @@ def create_app() -> FastAPI:
     @app.post("/api/admin/import")
     async def admin_import(
         file: UploadFile = File(...),
-        media_type: str = File("movie"),
+        media_type: str = Form("movie"),
+        import_mode: str = Form("create"),
+        target_work_key: str = Form(""),
         cover: UploadFile | None = File(default=None),
         _: str = Depends(require_admin),
     ):
-        return await import_media_file(file, media_type, cover)
+        return await import_media_file(
+            file, media_type, cover, import_mode, target_work_key
+        )
 
     @app.post("/api/register")
     def register(payload: RegisterPayload):
@@ -809,15 +827,18 @@ def create_app() -> FastAPI:
                 conn.commit()
             play_mode = "audio" if is_audio_media_url(safe_video_url) else "video"
             can_control = controller_user_id in (None, user.id)
-            return {
-                "videoUrl": safe_video_url,
-                "playMode": play_mode,
-                "currentTime": state["current_time_sec"],
-                "isPlaying": bool(state["is_playing"]),
-                "updatedAt": state["updated_at"],
-                "controllerUserId": controller_user_id,
-                "canControl": can_control,
-            }
+            return attach_track_index(
+                {
+                    "videoUrl": safe_video_url,
+                    "playMode": play_mode,
+                    "currentTime": state["current_time_sec"],
+                    "isPlaying": bool(state["is_playing"]),
+                    "updatedAt": state["updated_at"],
+                    "controllerUserId": controller_user_id,
+                    "canControl": can_control,
+                },
+                safe_video_url,
+            )
         finally:
             conn.close()
 
@@ -969,25 +990,22 @@ def create_app() -> FastAPI:
                     fix_conn.commit()
                 finally:
                     fix_conn.close()
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "state",
-                        "videoUrl": initial_video_url,
-                        "playMode": initial_play_mode,
-                        "currentTime": state["current_time_sec"] if state else 0,
-                        "isPlaying": bool(state["is_playing"]) if state else False,
-                        "updatedAt": state["updated_at"]
-                        if state
-                        else dt_to_str(now_utc()),
-                        "controllerUserId": initial_controller,
-                        "actionId": 0,
-                        "by": "system",
-                    }
-                )
+            initial_state_payload = attach_track_index(
+                {
+                    "type": "state",
+                    "videoUrl": initial_video_url,
+                    "playMode": initial_play_mode,
+                    "currentTime": state["current_time_sec"] if state else 0,
+                    "isPlaying": bool(state["is_playing"]) if state else False,
+                    "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
+                    "controllerUserId": initial_controller,
+                    "actionId": 0,
+                    "by": "system",
+                },
+                initial_video_url,
             )
-            await hub.broadcast(
-                room_id,
+            await websocket.send_text(json.dumps(initial_state_payload))
+            presence_state_payload = attach_track_index(
                 {
                     "type": "state",
                     "videoUrl": initial_video_url,
@@ -999,6 +1017,11 @@ def create_app() -> FastAPI:
                     "actionId": 0,
                     "by": "system-presence-sync",
                 },
+                initial_video_url,
+            )
+            await hub.broadcast(
+                room_id,
+                presence_state_payload,
             )
             sync_log(
                 "ws_initial_state",
@@ -1093,17 +1116,20 @@ def create_app() -> FastAPI:
                             )
                             await websocket.send_text(
                                 json.dumps(
-                                    {
-                                        "type": "state",
-                                        "videoUrl": video_url,
-                                        "playMode": play_mode,
-                                        "currentTime": current_time,
-                                        "isPlaying": is_playing,
-                                        "updatedAt": dt_to_str(now_utc()),
-                                        "controllerUserId": active_controller,
-                                        "actionId": action_id,
-                                        "by": "controller-locked",
-                                    }
+                                    attach_track_index(
+                                        {
+                                            "type": "state",
+                                            "videoUrl": video_url,
+                                            "playMode": play_mode,
+                                            "currentTime": current_time,
+                                            "isPlaying": is_playing,
+                                            "updatedAt": dt_to_str(now_utc()),
+                                            "controllerUserId": active_controller,
+                                            "actionId": action_id,
+                                            "by": "controller-locked",
+                                        },
+                                        video_url,
+                                    )
                                 )
                             )
                             continue
@@ -1177,8 +1203,7 @@ def create_app() -> FastAPI:
                         up_conn.close()
 
                     if should_broadcast_state:
-                        await hub.broadcast(
-                            room_id,
+                        state_payload = attach_track_index(
                             {
                                 "type": "state",
                                 "videoUrl": video_url,
@@ -1190,6 +1215,11 @@ def create_app() -> FastAPI:
                                 "actionId": action_id,
                                 "by": user.username,
                             },
+                            video_url,
+                        )
+                        await hub.broadcast(
+                            room_id,
+                            state_payload,
                         )
                         sync_log(
                             "ws_sync_broadcast",

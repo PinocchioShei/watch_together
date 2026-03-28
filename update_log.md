@@ -530,3 +530,53 @@
 - Keep only member list broadcast on disconnect, and let authoritative playback state continue from normal sync stream.
 - UI correction per request: desktop media library cards now stay compact and visually smaller while mobile keeps single-column full-width adaptive behavior.
 - Bumped user static versions for cache refresh (`styles.css?v=20260326m`, `app.js?v=20260326m`, footer build `20260326m`).
+
+## 2026-03-28 18:56
+- Added ordered multi-audio support for **audio-only works only** while leaving video works unchanged.
+- Backend now scans pure-audio work folders for multiple audio files, exposes `audioTracks` in media-library payloads, and derives `trackIndex` in room state / websocket state from the selected track URL.
+- User room UI now shows a compact track selector in audio mode for pure-audio works with multiple tracks; changing track resets that track to `0s`, preserves play/pause intent, and syncs the selected track across members.
+- Admin media detail now lists ordered audio tracks for pure-audio works instead of only implying a single audio file.
+- Relaxed some previously strict client sync timing guards to improve pause/play/seek responsiveness now that the refresh/leave reset root cause has already been addressed.
+- Follow-up fixes after readback/review:
+  - backend `trackIndex` derivation now normalizes encoded vs decoded URLs for filenames/work names with spaces or non-ASCII characters,
+  - pure-audio works no longer allow switching into invalid video mode,
+  - re-clicking the same pure-audio work card in audio mode preserves the currently selected track instead of snapping back to track 1,
+  - leaving a room from audio mode now fully resets the room panel back to video-mode UI state.
+- Bumped static versions for cache refresh (`styles.css?v=20260326p`, `app.js?v=20260326p`, `admin.js?v=20260326p`, build label `20260326p`).
+
+## 2026-03-28 19:42
+- Upgraded the admin import system with **append mode for existing pure-audio albums**.
+- Backend import (`wt_server/media.py`) now supports `append_audio` mode:
+  - validates that target work exists and is audio-only,
+  - rejects cover uploads and video-containing files in append mode,
+  - transcodes the appended upload to AAC `.m4a`, stores it under the existing work folder, and preserves stable album ordering via `.meta.json` `audioTrackOrder`.
+- Admin import UI (`static/admin.html`, `static/admin.js`) now provides:
+  - `Create new work` vs `Append to audio album` mode,
+  - target-work dropdown limited to existing audio-only works,
+  - append-mode field disabling/validation and dedicated success/error messages.
+- User upload flow intentionally remains create-only and unchanged.
+- Verified append mode with a temporary generated pure-audio album: append import succeeded, `audioTracks` expanded correctly, and default `audioUrl` remained the first track.
+- Bumped static versions for cache refresh (`styles.css?v=20260328a`, `app.js?v=20260328a`, `admin.js?v=20260328a`, build label `20260328a`).
+
+## 2026-03-28 20:06
+- Fixed append-target discovery for emptied pure-audio albums.
+- Added backend admin append-target listing that includes audio-only works even when they currently have `0` tracks, as long as the work directory and `.meta.json` still exist.
+- Updated admin append dropdown to use the dedicated append-target API instead of only visible media-library items, so deleted/emptied albums like `RJ01507563` can still be selected for track appends.
+- Verified with a temporary empty album shell that append-target listing returns `trackCount: 0` and remains selectable.
+- Bumped static versions for cache refresh (`styles.css?v=20260328b`, `app.js?v=20260328b`, `admin.js?v=20260328b`, build label `20260328b`).
+
+## 2026-03-28 20:18
+- Tightened admin append-target dropdown behavior after follow-up UI issue: if append mode is active and targets exist, the first valid target is now auto-selected instead of leaving the selector blank.
+- This avoids the append form getting stuck in an apparently unselectable empty state when the target list refreshes.
+- Bumped static versions for cache refresh (`styles.css?v=20260328c`, `app.js?v=20260328c`, `admin.js?v=20260328c`, build label `20260328c`).
+
+## 2026-03-28 20:25
+- Further hardened admin append-target loading: switching the import mode to `Append to audio album` now actively re-fetches append targets instead of relying only on initial dashboard bootstrap.
+- This addresses the case where the backend already has valid appendable works (including empty albums like `RJ01507563`) but the dropdown remained empty due to stale or missed initial load state.
+- Bumped static versions for cache refresh (`styles.css?v=20260328d`, `app.js?v=20260328d`, `admin.js?v=20260328d`, build label `20260328d`).
+
+## 2026-03-26 12:02
+- Relaxed previously strict client-side sync guards now that refresh/leave reset root cause has been resolved.
+- Removed `blockLocalSyncUntil` gate from playback sync path and reduced local override window from `1200ms` to `450ms` to improve responsiveness for seek/pause/play synchronization.
+- Tightened sync dispatch debounce from `40/120ms` to `20/60ms` (takeover/normal) for snappier cross-client reactions.
+- Bumped user static versions for cache refresh (`styles.css?v=20260326n`, `app.js?v=20260326n`, footer build `20260326n`).
