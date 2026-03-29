@@ -21,6 +21,7 @@ const state = {
   activeMediaUrl: "",
   activeMediaId: null,
   activeTrackIndex: 0,
+  audioAlbumMode: "stop",
   lastSyncedMediaPath: "",
   playMode: "video",
   localActionCounter: 0,
@@ -59,6 +60,8 @@ const videoPlayer = document.getElementById("videoPlayer");
 const audioPlayer = document.getElementById("audioPlayer");
 const audioTrackRow = document.getElementById("audioTrackRow");
 const audioTrackSelect = document.getElementById("audioTrackSelect");
+const audioAlbumModeRow = document.getElementById("audioAlbumModeRow");
+const audioAlbumModeSelect = document.getElementById("audioAlbumModeSelect");
 const modeVideoBtn = document.getElementById("modeVideoBtn");
 const modeAudioBtn = document.getElementById("modeAudioBtn");
 const refreshMediaBtn = document.getElementById("refreshMediaBtn");
@@ -100,6 +103,7 @@ function syncDebug(event, fields = {}) {
     roomId: state.roomId,
     user: state.me?.username || "guest",
     mode: state.playMode,
+    audioAlbumMode: state.audioAlbumMode,
     activeMediaId: state.activeMediaId,
     activeMediaUrl: toMediaPath(state.activeMediaUrl) || state.activeMediaUrl || "",
     ...fields,
@@ -484,8 +488,65 @@ function getTrackLabel(trackUrl, index) {
   }
 }
 
+function normalizeAudioAlbumMode(value) {
+  if (value === "next" || value === "repeat") {
+    return value;
+  }
+  return "stop";
+}
+
+function isAudioOnlyItem(item) {
+  if (!item || item.videoUrl) {
+    return false;
+  }
+  return !!(item.audioUrl || getPureAudioTracks(item).length);
+}
+
+function isCurrentControllerClient() {
+  return state.controllerUserId === null || (state.me && state.controllerUserId === state.me.id);
+}
+
+function renderAudioAlbumModeControl() {
+  if (!audioAlbumModeRow || !audioAlbumModeSelect) {
+    return;
+  }
+  const activeItem = state.playMode === "audio" ? getActiveMediaItem() : null;
+  const shouldShow = state.playMode === "audio" && isAudioOnlyItem(activeItem);
+  audioAlbumModeRow.classList.toggle("hidden", !shouldShow);
+  audioAlbumModeSelect.disabled = !shouldShow;
+  audioAlbumModeSelect.value = normalizeAudioAlbumMode(state.audioAlbumMode);
+}
+
+function applyAudioAlbumModeToPlayer() {
+  const activeItem = getActiveMediaItem();
+  const shouldLoopCurrentTrack =
+    state.playMode === "audio" &&
+    isAudioOnlyItem(activeItem) &&
+    normalizeAudioAlbumMode(state.audioAlbumMode) === "repeat";
+  audioPlayer.loop = shouldLoopCurrentTrack;
+}
+
+async function waitForMediaReady(player, timeoutMs = 900) {
+  if (!player || player.readyState >= 3) {
+    return;
+  }
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    player.addEventListener("canplay", finish, { once: true });
+    player.addEventListener("loadedmetadata", finish, { once: true });
+  });
+}
+
 function renderAudioTrackSelector() {
   if (!audioTrackRow || !audioTrackSelect) {
+    renderAudioAlbumModeControl();
     return;
   }
   const activeItem = state.playMode === "audio" ? getActiveMediaItem() : null;
@@ -495,6 +556,7 @@ function renderAudioTrackSelector() {
   audioTrackSelect.disabled = !shouldShow;
   audioTrackSelect.innerHTML = "";
   if (!shouldShow) {
+    renderAudioAlbumModeControl();
     return;
   }
   const selectedIndex = getTrackIndexForItem(activeItem, state.activeMediaUrl, state.activeTrackIndex);
@@ -506,6 +568,7 @@ function renderAudioTrackSelector() {
     option.selected = index === selectedIndex;
     audioTrackSelect.appendChild(option);
   });
+  renderAudioAlbumModeControl();
 }
 
 function normalizeMediaType(value) {
@@ -574,6 +637,7 @@ function setPlayMode(mode, { silent = false } = {}) {
     toPlayer.currentTime = fromTime;
   }
   fromPlayer.pause();
+  applyAudioAlbumModeToPlayer();
   if (wasPlaying && toPlayer.currentSrc) {
     toPlayer.play().catch(() => {});
   }
@@ -665,6 +729,7 @@ function renderMediaLibrary() {
       state.lastSyncedMediaPath = toMediaPath(selectedUrl) || state.lastSyncedMediaPath;
       const player = getActivePlayer();
       player.src = selectedUrl;
+      applyAudioAlbumModeToPlayer();
       player.currentTime = 0;
       await player.play().catch(() => {});
       sendSync();
@@ -688,6 +753,7 @@ async function loadMediaLibrary() {
   ensureFilterShowsActiveItem();
   renderMediaLibrary();
   renderAudioTrackSelector();
+  applyAudioAlbumModeToPlayer();
 }
 
 function showTab(which) {
@@ -772,6 +838,7 @@ function enterLobbyView(clearSavedRoom = true) {
   state.activeMediaUrl = "";
   state.activeMediaId = null;
   state.activeTrackIndex = 0;
+  state.audioAlbumMode = "stop";
   state.lastSyncedMediaPath = "";
   state.localOverrideUntil = 0;
   state.localActionCounter = 0;
@@ -781,6 +848,7 @@ function enterLobbyView(clearSavedRoom = true) {
   stopRoomHealthCheck();
   videoPlayer.pause();
   audioPlayer.pause();
+  audioPlayer.loop = false;
   videoPlayer.removeAttribute("src");
   audioPlayer.removeAttribute("src");
   videoPlayer.load();
@@ -1007,6 +1075,10 @@ function applyRemoteState(data, by) {
 
   state.suppressVideoEvents = true;
 
+  if (Object.prototype.hasOwnProperty.call(data, "audioAlbumMode")) {
+    state.audioAlbumMode = normalizeAudioAlbumMode(data.audioAlbumMode);
+  }
+
   if (Object.prototype.hasOwnProperty.call(data, "controllerUserId")) {
     state.controllerUserId = data.controllerUserId;
   }
@@ -1053,11 +1125,14 @@ function applyRemoteState(data, by) {
     state.activeTrackIndex = media ? getTrackIndexForItem(media, incomingSourceUrl, data.trackIndex) : 0;
     renderAudioTrackSelector();
   }
+  renderAudioAlbumModeControl();
+  applyAudioAlbumModeToPlayer();
 
   syncDebug("remote_state_applied", {
     by,
     actionId: data.actionId,
     incomingMode: remoteMode,
+    audioAlbumMode: state.audioAlbumMode,
     incomingVideoUrl: incomingMediaPath,
     trackIndex: data.trackIndex,
     playerCurrentSrc: toMediaPath(player.currentSrc || player.src || "") || "",
@@ -1124,6 +1199,9 @@ function sendSync() {
     state.controllerUserId === null ||
     (state.me && state.controllerUserId === state.me.id);
   if (!canPush) return;
+  if (state.me && (state.forceTakeover || state.controllerUserId === null)) {
+    state.controllerUserId = state.me.id;
+  }
   const actionId = ++state.localActionCounter;
   state.lastLocalActionId = actionId;
   const player = getActivePlayer();
@@ -1149,6 +1227,7 @@ function sendSync() {
     actionId,
     forceTakeover: state.forceTakeover,
     playMode: state.playMode,
+    audioAlbumMode: normalizeAudioAlbumMode(state.audioAlbumMode),
     videoUrl: mediaPath,
     currentTime: Number(player.currentTime || 0),
     isPlaying: !player.paused,
@@ -1164,6 +1243,7 @@ function sendSync() {
     payloadVideoUrl: payload.videoUrl,
     payloadTrackIndex: payload.trackIndex,
     payloadMode: payload.playMode,
+    payloadAudioAlbumMode: payload.audioAlbumMode,
     payloadTime: payload.currentTime,
     payloadPlaying: payload.isPlaying,
   });
@@ -1184,6 +1264,17 @@ function onLocalPlaybackAction(event) {
   if (state.suppressVideoEvents) {
     return;
   }
+  if (
+    event &&
+    event.type === "pause" &&
+    event.currentTarget === audioPlayer &&
+    state.playMode === "audio" &&
+    !audioPlayer.loop &&
+    audioPlayer.ended &&
+    isAudioOnlyItem(getActiveMediaItem())
+  ) {
+    return;
+  }
   if (event && event.isTrusted === false) {
     syncDebug("skip_untrusted_playback_event", {
       eventType: event.type,
@@ -1191,6 +1282,9 @@ function onLocalPlaybackAction(event) {
     return;
   }
   state.forceTakeover = true;
+  if (state.me) {
+    state.controllerUserId = state.me.id;
+  }
   state.localOverrideUntil = Date.now() + 450;
   scheduleSync();
 }
@@ -1313,12 +1407,16 @@ if (audioTrackSelect) {
     const player = audioPlayer;
     const wasPlaying = !player.paused;
     state.forceTakeover = true;
+    if (state.me) {
+      state.controllerUserId = state.me.id;
+    }
     state.localOverrideUntil = Date.now() + 1200;
     state.activeMediaId = activeItem?.id || null;
     state.activeTrackIndex = nextIndex;
     state.activeMediaUrl = nextUrl;
     state.lastSyncedMediaPath = toMediaPath(nextUrl) || state.lastSyncedMediaPath;
     player.src = nextUrl;
+    applyAudioAlbumModeToPlayer();
     try {
       player.currentTime = 0;
     } catch {
@@ -1326,12 +1424,29 @@ if (audioTrackSelect) {
     renderMediaLibrary();
     renderAudioTrackSelector();
     if (wasPlaying) {
+      await waitForMediaReady(player);
       await player.play().catch(() => {});
     } else {
       player.pause();
     }
     sendSync();
     setMediaStatus(`Selected ${getTrackLabel(nextUrl, nextIndex)}.`);
+  };
+}
+
+if (audioAlbumModeSelect) {
+  audioAlbumModeSelect.onchange = () => {
+    const nextMode = normalizeAudioAlbumMode(audioAlbumModeSelect.value);
+    state.audioAlbumMode = nextMode;
+    renderAudioAlbumModeControl();
+    applyAudioAlbumModeToPlayer();
+    state.forceTakeover = true;
+    if (state.me) {
+      state.controllerUserId = state.me.id;
+    }
+    state.localOverrideUntil = Date.now() + 1200;
+    sendSync();
+    setMediaStatus(`Audio album mode set to ${nextMode}.`);
   };
 }
 
@@ -1348,6 +1463,86 @@ videoPlayer.addEventListener("timeupdate", () => {
 audioPlayer.addEventListener("timeupdate", () => {
   if (state.playMode !== "audio") return;
   if (!audioPlayer.paused) scheduleSync();
+});
+
+audioPlayer.addEventListener("ended", async () => {
+  if (state.playMode !== "audio" || state.suppressVideoEvents) {
+    return;
+  }
+  const activeItem = getActiveMediaItem();
+  if (!isAudioOnlyItem(activeItem)) {
+    return;
+  }
+  const albumMode = normalizeAudioAlbumMode(state.audioAlbumMode);
+  if (!isCurrentControllerClient()) {
+    return;
+  }
+  if (albumMode === "repeat") {
+    state.forceTakeover = true;
+    if (state.me) {
+      state.controllerUserId = state.me.id;
+    }
+    state.localOverrideUntil = Date.now() + 1200;
+    state.activeMediaId = activeItem?.id || null;
+    state.activeTrackIndex = getTrackIndexForItem(
+      activeItem,
+      state.activeMediaUrl || audioPlayer.currentSrc || audioPlayer.src,
+      state.activeTrackIndex,
+    );
+    try {
+      audioPlayer.currentTime = 0;
+    } catch {
+    }
+    applyAudioAlbumModeToPlayer();
+    await audioPlayer.play().catch(() => {});
+    sendSync();
+    setMediaStatus("Repeating current track.");
+    return;
+  }
+  const tracks = getPureAudioTracks(activeItem);
+  const currentIndex = getTrackIndexForItem(
+    activeItem,
+    state.activeMediaUrl || audioPlayer.currentSrc || audioPlayer.src,
+    state.activeTrackIndex,
+  );
+  state.forceTakeover = true;
+  if (state.me) {
+    state.controllerUserId = state.me.id;
+  }
+  state.localOverrideUntil = Date.now() + 1200;
+  state.activeMediaId = activeItem?.id || null;
+  state.activeTrackIndex = currentIndex;
+  state.activeMediaUrl = audioPlayer.currentSrc || audioPlayer.src || state.activeMediaUrl;
+  state.lastSyncedMediaPath =
+    toMediaPath(audioPlayer.currentSrc || audioPlayer.src || state.activeMediaUrl) || state.lastSyncedMediaPath;
+
+  if (albumMode === "next" && tracks.length && currentIndex < tracks.length - 1) {
+    const nextIndex = currentIndex + 1;
+    const nextUrl = tracks[nextIndex] || "";
+    if (nextUrl) {
+      state.activeTrackIndex = nextIndex;
+      state.activeMediaUrl = nextUrl;
+      state.lastSyncedMediaPath = toMediaPath(nextUrl) || state.lastSyncedMediaPath;
+      audioPlayer.src = nextUrl;
+      applyAudioAlbumModeToPlayer();
+      try {
+        audioPlayer.currentTime = 0;
+      } catch {
+      }
+      renderAudioTrackSelector();
+      await waitForMediaReady(audioPlayer);
+      await audioPlayer.play().catch(() => {});
+      sendSync();
+      setMediaStatus(`Advanced to ${getTrackLabel(nextUrl, nextIndex)}.`);
+      return;
+    }
+  }
+
+  audioPlayer.pause();
+  renderAudioTrackSelector();
+  applyAudioAlbumModeToPlayer();
+  sendSync();
+  setMediaStatus(albumMode === "next" ? "Reached the end of the album." : "Stopped after the current track.");
 });
 
 const lobbyModule = createLobbyModule({

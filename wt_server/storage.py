@@ -84,6 +84,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS room_state (
             room_id INTEGER PRIMARY KEY,
             video_url TEXT NOT NULL DEFAULT '',
+            audio_album_mode TEXT NOT NULL DEFAULT 'stop',
             current_time REAL NOT NULL DEFAULT 0,
             is_playing INTEGER NOT NULL DEFAULT 0,
             controller_user_id INTEGER,
@@ -122,6 +123,10 @@ def init_db() -> None:
     }
     if "controller_user_id" not in columns:
         conn.execute("ALTER TABLE room_state ADD COLUMN controller_user_id INTEGER")
+    if "audio_album_mode" not in columns:
+        conn.execute(
+            "ALTER TABLE room_state ADD COLUMN audio_album_mode TEXT NOT NULL DEFAULT 'stop'"
+        )
 
     room_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(rooms)").fetchall()

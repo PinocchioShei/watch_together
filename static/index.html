@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Local</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260328d" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260329c" />
   </head>
   <body>
     <div class="page auth-only">
@@ -126,9 +126,19 @@
                 <video id="videoPlayer" controls preload="metadata"></video>
                 <div id="audioPanel" class="audio-panel hidden">
                   <div class="audio-hero">Audio Together</div>
-                  <div id="audioTrackRow" class="media-filter-row audio-track-row hidden">
-                    <label for="audioTrackSelect">Track</label>
-                    <select id="audioTrackSelect" aria-label="Select audio track"></select>
+                  <div class="audio-controls-stack">
+                    <div id="audioTrackRow" class="media-filter-row audio-track-row hidden">
+                      <label for="audioTrackSelect">Track</label>
+                      <select id="audioTrackSelect" aria-label="Select audio track"></select>
+                    </div>
+                    <div id="audioAlbumModeRow" class="media-filter-row audio-mode-row hidden">
+                      <label for="audioAlbumModeSelect">Mode</label>
+                      <select id="audioAlbumModeSelect" aria-label="Select audio album playback mode">
+                        <option value="stop">Stop</option>
+                        <option value="next">Next</option>
+                        <option value="repeat">Repeat</option>
+                      </select>
+                    </div>
                   </div>
                   <audio id="audioPlayer" controls preload="metadata"></audio>
                 </div>
@@ -155,10 +165,10 @@
         </section>
       </main>
       <footer class="app-footer">
-        <span>Frontend Build: 20260328d</span>
+        <span>Frontend Build: 20260329c</span>
       </footer>
     </div>
 
-    <script type="module" src="/static/app.js?v=20260328d" defer></script>
+    <script type="module" src="/static/app.js?v=20260329c" defer></script>
   </body>
 </html>

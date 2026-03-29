@@ -575,6 +575,33 @@
 - This addresses the case where the backend already has valid appendable works (including empty albums like `RJ01507563`) but the dropdown remained empty due to stale or missed initial load state.
 - Bumped static versions for cache refresh (`styles.css?v=20260328d`, `app.js?v=20260328d`, `admin.js?v=20260328d`, build label `20260328d`).
 
+## 2026-03-28 20:42
+- Fixed admin work rename so sidecar metadata stays in sync with the new work name.
+- `rename_media_work(...)` now updates `.meta.json` title during rename and preserves ordered audio track metadata, so append-target labels no longer keep showing stale pre-rename names.
+- Also fixed the adjacent pure-audio rename path so DB URL updates no longer assume a video file exists.
+- Verified with a temporary pure-audio album rename: folder name, `.meta.json.title`, and append-target display name all updated to the renamed value.
+- Bumped static versions for cache refresh (`styles.css?v=20260328e`, `app.js?v=20260328e`, `admin.js?v=20260328e`, build label `20260328e`).
+
+## 2026-03-29 18:08
+- Added synced audio album playback modes on the user room page for audio-only works: `stop`, `next`, and `repeat`.
+- Backend room state now persists `audio_album_mode` and exposes/syncs `audioAlbumMode` through room REST state, websocket initial state, and websocket sync broadcasts.
+- User frontend now shows a compact `Mode` selector in the audio panel, applies native `audio.loop` for repeat mode, and handles controller-only `ended` transitions for stop-at-end and advance-to-next-track-without-wrap.
+- Automatic next-track / stop decisions are now synchronized across room members through the normal sync payload, alongside existing `trackIndex` and playback state.
+- Bumped static versions for cache refresh (`styles.css?v=20260329a`, `app.js?v=20260329a`, `admin.js?v=20260329a`, build label `20260329a`).
+
+## 2026-03-29 18:19
+- Fixed a near-end race in synced `repeat` mode: if the mode is switched to repeat very close to track end and the browser still fires one `ended` event before native looping fully takes effect, the controller now explicitly seeks back to `0`, resumes playback, and syncs the repeated track to the room.
+- This preserves native `audio.loop` for normal repeat behavior while adding a deterministic fallback for late repeat-mode toggles during active playback.
+- Bumped static versions for cache refresh (`styles.css?v=20260329b`, `app.js?v=20260329b`, `admin.js?v=20260329b`, build label `20260329b`).
+
+## 2026-03-29 18:34
+- Improved multiplayer reliability for album `next` mode after investigating intermittent stop-at-end reports.
+- Root-cause-oriented frontend fix in `static/app.js`:
+  - local takeover actions now immediately mark the current client as controller, reducing stale-controller early-exit risk in the `ended` handler,
+  - automatic next-track advance and manual track switching now wait for the new audio source to become ready before calling `play()`, reducing intermittent next-track startup failure after `src` changes.
+- This specifically targets cases where a track ended in multiplayer but the controller occasionally failed to advance the room to the next track.
+- Bumped static versions for cache refresh (`styles.css?v=20260329c`, `app.js?v=20260329c`, `admin.js?v=20260329c`, build label `20260329c`).
+
 ## 2026-03-26 12:02
 - Relaxed previously strict client-side sync guards now that refresh/leave reset root cause has been resolved.
 - Removed `blockLocalSyncUntil` gate from playback sync path and reduced local override window from `1200ms` to `450ms` to improve responsiveness for seek/pause/play synchronization.

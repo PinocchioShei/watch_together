@@ -694,16 +694,34 @@ button.danger:hover {
   min-width: 0;
 }
 
+.audio-controls-stack {
+  display: grid;
+  gap: 8px;
+}
+
 .audio-track-row {
   margin: 0;
 }
 
-.audio-track-row label {
+.audio-track-row label,
+.audio-mode-row label {
   font-size: 12px;
 }
 
-.audio-track-row select {
+.audio-track-row select,
+.audio-mode-row select {
   min-width: 0;
+}
+
+.audio-mode-row select {
+  background: var(--panel-soft);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.audio-mode-row select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .chat-column {

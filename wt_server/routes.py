@@ -107,6 +107,13 @@ def attach_track_index(payload: dict, media_url: str) -> dict:
     return payload
 
 
+def normalize_audio_album_mode(value: str | None) -> str:
+    mode = (value or "stop").strip().lower()
+    if mode in {"stop", "next", "repeat"}:
+        return mode
+    return "stop"
+
+
 def get_admin_row(conn: sqlite3.Connection):
     return conn.execute(
         "SELECT id, username, password_salt, password_hash FROM admin_account WHERE id = 1"
@@ -793,7 +800,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=403, detail="Join room first")
             state = conn.execute(
                 """
-                SELECT rs.video_url, rs.current_time AS current_time_sec, rs.is_playing, rs.updated_at, rs.controller_user_id
+                SELECT rs.video_url, rs.audio_album_mode, rs.current_time AS current_time_sec, rs.is_playing, rs.updated_at, rs.controller_user_id
                 FROM room_state rs
                 WHERE rs.room_id = ?
                 """,
@@ -826,11 +833,15 @@ def create_app() -> FastAPI:
                 )
                 conn.commit()
             play_mode = "audio" if is_audio_media_url(safe_video_url) else "video"
+            audio_album_mode = normalize_audio_album_mode(
+                state["audio_album_mode"] if state else "stop"
+            )
             can_control = controller_user_id in (None, user.id)
             return attach_track_index(
                 {
                     "videoUrl": safe_video_url,
                     "playMode": play_mode,
+                    "audioAlbumMode": audio_album_mode,
                     "currentTime": state["current_time_sec"],
                     "isPlaying": bool(state["is_playing"]),
                     "updatedAt": state["updated_at"],
@@ -961,7 +972,7 @@ def create_app() -> FastAPI:
             init_conn = db_conn()
             state = init_conn.execute(
                 """
-                SELECT rs.video_url, rs.current_time AS current_time_sec, rs.is_playing, rs.updated_at, rs.controller_user_id
+                SELECT rs.video_url, rs.audio_album_mode, rs.current_time AS current_time_sec, rs.is_playing, rs.updated_at, rs.controller_user_id
                 FROM room_state rs
                 WHERE rs.room_id = ?
                 """,
@@ -975,6 +986,9 @@ def create_app() -> FastAPI:
             )
             initial_play_mode = (
                 "audio" if is_audio_media_url(initial_video_url) else "video"
+            )
+            initial_audio_album_mode = normalize_audio_album_mode(
+                state["audio_album_mode"] if state else "stop"
             )
             initial_controller = state["controller_user_id"] if state else user.id
             if initial_controller is not None and not await hub.has_user(
@@ -995,6 +1009,7 @@ def create_app() -> FastAPI:
                     "type": "state",
                     "videoUrl": initial_video_url,
                     "playMode": initial_play_mode,
+                    "audioAlbumMode": initial_audio_album_mode,
                     "currentTime": state["current_time_sec"] if state else 0,
                     "isPlaying": bool(state["is_playing"]) if state else False,
                     "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
@@ -1010,6 +1025,7 @@ def create_app() -> FastAPI:
                     "type": "state",
                     "videoUrl": initial_video_url,
                     "playMode": initial_play_mode,
+                    "audioAlbumMode": initial_audio_album_mode,
                     "currentTime": state["current_time_sec"] if state else 0,
                     "isPlaying": bool(state["is_playing"]) if state else False,
                     "updatedAt": state["updated_at"] if state else dt_to_str(now_utc()),
@@ -1029,6 +1045,7 @@ def create_app() -> FastAPI:
                 userId=user.id,
                 videoUrl=initial_video_url,
                 playMode=initial_play_mode,
+                audioAlbumMode=initial_audio_album_mode,
                 currentTime=safe_float(state["current_time_sec"], 0.0)
                 if state
                 else 0.0,
@@ -1068,12 +1085,15 @@ def create_app() -> FastAPI:
                         continue
                     current_time = max(float(payload.get("currentTime", 0)), 0)
                     is_playing = bool(payload.get("isPlaying", False))
+                    audio_album_mode = normalize_audio_album_mode(
+                        str(payload.get("audioAlbumMode", "stop"))
+                    )
 
                     up_conn = db_conn()
                     should_broadcast_state = False
                     try:
                         latest_state = up_conn.execute(
-                            "SELECT controller_user_id, video_url, current_time, is_playing FROM room_state WHERE room_id = ?",
+                            "SELECT controller_user_id, video_url, audio_album_mode, current_time, is_playing FROM room_state WHERE room_id = ?",
                             (room_id,),
                         ).fetchone()
                         active_controller = (
@@ -1081,6 +1101,13 @@ def create_app() -> FastAPI:
                         )
                         existing_video_url = normalize_media_url(
                             (latest_state["video_url"] if latest_state else "") or ""
+                        )
+                        existing_audio_album_mode = normalize_audio_album_mode(
+                            (
+                                latest_state["audio_album_mode"]
+                                if latest_state
+                                else "stop"
+                            )
                         )
                         if not video_url and existing_video_url:
                             video_url = existing_video_url
@@ -1096,6 +1123,10 @@ def create_app() -> FastAPI:
                                 currentTime=current_time,
                                 isPlaying=is_playing,
                             )
+                        if play_mode != "audio":
+                            audio_album_mode = "stop"
+                        elif not video_url and existing_audio_album_mode:
+                            audio_album_mode = existing_audio_album_mode
                         if active_controller is not None and not await hub.has_user(
                             room_id, int(active_controller)
                         ):
@@ -1121,6 +1152,7 @@ def create_app() -> FastAPI:
                                             "type": "state",
                                             "videoUrl": video_url,
                                             "playMode": play_mode,
+                                            "audioAlbumMode": audio_album_mode,
                                             "currentTime": current_time,
                                             "isPlaying": is_playing,
                                             "updatedAt": dt_to_str(now_utc()),
@@ -1136,11 +1168,12 @@ def create_app() -> FastAPI:
 
                         up_conn.execute(
                             """
-                            INSERT INTO room_state(room_id, video_url, current_time, is_playing, controller_user_id, updated_by, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO room_state(room_id, video_url, audio_album_mode, current_time, is_playing, controller_user_id, updated_by, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(room_id)
                             DO UPDATE SET
                                 video_url = excluded.video_url,
+                                audio_album_mode = excluded.audio_album_mode,
                                 current_time = excluded.current_time,
                                 is_playing = excluded.is_playing,
                                 controller_user_id = excluded.controller_user_id,
@@ -1150,6 +1183,7 @@ def create_app() -> FastAPI:
                             (
                                 room_id,
                                 video_url,
+                                audio_album_mode,
                                 current_time,
                                 1 if is_playing else 0,
                                 user.id,
@@ -1169,6 +1203,7 @@ def create_app() -> FastAPI:
                             playMode=play_mode,
                             currentTime=current_time,
                             isPlaying=is_playing,
+                            audioAlbumMode=audio_album_mode,
                             forceTakeover=takeover,
                         )
                     except sqlite3.IntegrityError:
@@ -1208,6 +1243,7 @@ def create_app() -> FastAPI:
                                 "type": "state",
                                 "videoUrl": video_url,
                                 "playMode": play_mode,
+                                "audioAlbumMode": audio_album_mode,
                                 "currentTime": current_time,
                                 "isPlaying": is_playing,
                                 "updatedAt": dt_to_str(now_utc()),
@@ -1228,6 +1264,7 @@ def create_app() -> FastAPI:
                             actionId=action_id,
                             videoUrl=video_url,
                             playMode=play_mode,
+                            audioAlbumMode=audio_album_mode,
                             currentTime=current_time,
                             isPlaying=is_playing,
                         )

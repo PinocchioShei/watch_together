@@ -674,9 +674,24 @@ def rename_media_work(
         src_dir.rename(dst_dir)
 
     video_file = _find_first_media_file(dst_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
-    audio_file = _find_first_media_file(dst_dir, ALLOWED_AUDIO_EXTENSIONS, "audio")
-    if not video_file:
-        raise HTTPException(status_code=400, detail="Work folder missing video file")
+    ordered_audio_files = _list_ordered_audio_files(dst_dir)
+    audio_file = ordered_audio_files[0] if ordered_audio_files else None
+    if not video_file and not audio_file:
+        raise HTTPException(
+            status_code=400, detail="Work folder missing playable media file"
+        )
+
+    meta = _read_work_meta(dst_dir)
+    _write_work_meta(
+        dst_dir,
+        (meta.get("mediaType") or _guess_media_type(target_key)),
+        title=target_key,
+        extra=(
+            {"audioTrackOrder": [p.name for p in ordered_audio_files]}
+            if ordered_audio_files
+            else None
+        ),
+    )
 
     rows = conn.execute("SELECT id, video_url, audio_url FROM media_assets").fetchall()
     update_ids = [
@@ -689,7 +704,7 @@ def rename_media_work(
             "UPDATE media_assets SET title = ?, video_url = ?, audio_url = ?, updated_at = ? WHERE id = ?",
             (
                 target_key,
-                media_url_from_work(target_key, video_file.name),
+                media_url_from_work(target_key, video_file.name) if video_file else "",
                 media_url_from_work(target_key, audio_file.name) if audio_file else "",
                 dt_to_str(now_utc()),
                 row_id,
