@@ -4,6 +4,7 @@ __pycache__/
 
 watch_together.db
 media/
+backups/
 
 log/debug/*.log
 tools/ddns_cf_config.json

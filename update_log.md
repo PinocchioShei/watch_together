@@ -660,3 +660,10 @@
 - Added disposable backend/browser regression checks, collection API documentation and development dependencies. Updated deployment instructions and static build/version labels to `20261101a`.
 - Validation: all 13 integration/browser checks passed, including two-user playback and restart naming. Backed up the live SQLite database and 48 work metadata files, restarted 8090/8091, and verified pages, shared import fields, unchanged database row counts and all 225 historical media/cover files unchanged in path, size and modification time.
 - Recorded the project maintenance workflow in AGENTS.md: frontend version update, bilingual change logs, validation and service restart, then a local Git commit.
+
+## 2026-11-01 — Normalize existing media
+- Added an offline legacy-media migration tool with read-only planning, independent full media/SQLite backups, SHA-256 checks and rollback on ordinary failures. Backups are outside public media and excluded from Git.
+- Normalize single-file work/resource names, preserve existing collection names and tracks, archive matching legacy extracted audio, refresh metadata/indexes and remap persisted room media URLs. Unknown mixed shapes and name conflicts stop migration before writing.
+- Documented migration and recovery. Bumped user/admin frontend build and module URLs to `20261101b`.
+- Migrated the local 48-work library: renamed 40 single-file works, retained all 8 audio collections, archived 34 extracted audio files (2,071,920,110 bytes), removed 5 stale index rows and indexed 3 previously unindexed works. Full independent backup: `backups/legacy-media-20261101-b`.
+- Validation: all 18 regressions passed. Backup and retained media passed SHA-256 checks; restarted 8090/8091 and verified all 142 media files via HTTP Range, all 48 covers and all 48 append targets. Library now has 36 video works and 12 audio works, with no mixed works. Account/session/room tables remained unchanged.
