@@ -26,6 +26,13 @@ def valid_name(value):
     return value
 
 
+def work_title(value):
+    value = valid_name(value)
+    while Path(value).suffix.lower() in EXTENSIONS:
+        value = Path(value).stem
+    return valid_name(value)
+
+
 def child(root, relative):
     path = root / relative
     if root.resolve() not in path.resolve().parents:
@@ -92,7 +99,7 @@ def build_plan(project):
             archived = audios
             tracks = videos
         kind = tracks[0]["kind"]
-        key = directory.name
+        key = work_title(directory.name)
         renamed = {}
         original_names = {}
         for track in tracks:
@@ -105,7 +112,7 @@ def build_plan(project):
                     destination = key if key.lower().endswith(suffix.lower()) else key + suffix
                 elif original and Path(name).stem.lower() in {"video", "audio"}:
                     destination = Path(original).stem + Path(name).suffix
-                key = valid_name(original or destination)
+                key = work_title(original or destination)
             renamed[name] = valid_name(destination)
             original_names[destination] = original or destination
         if len({name.casefold() for name in renamed.values()}) != len(renamed):

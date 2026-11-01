@@ -31,7 +31,7 @@ export function createImportForm({ form, api, endpoint, targetsPath, upload,
     }
     form.querySelector(".import-hint").textContent = append
         ? `Append up to ${maxFiles} files of the same kind as the selected collection. Video and audio cannot be mixed.`
-      : `Select 1–${maxFiles} videos or audio files. A single work uses the filename; multiple files require a collection name.`;
+      : `Select 1–${maxFiles} videos or audio files. A single work uses the filename without its media extension; multiple files require a collection name.`;
   }
 
   async function refreshTargets() {

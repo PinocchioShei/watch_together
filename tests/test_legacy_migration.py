@@ -65,17 +65,17 @@ class LegacyMigrationTests(unittest.TestCase):
         result = migration.migrate(self.root, migration.build_plan(self.root), self.backup)
         self.assertEqual(result["archivedAudioFiles"], 1)
         self.assertEqual(result["removedStaleRows"], 1)
-        new = self.root / "media/work/旧视频 #1.mp4"
+        new = self.root / "media/work/旧视频 #1"
         self.assertEqual((new / "旧视频 #1.mp4").read_bytes(), self.video)
         self.assertFalse((new / "audio.m4a").exists())
         self.assertEqual((self.backup / "media/work/旧视频 #1/audio.m4a").read_bytes(), self.audio)
         self.assertEqual((album / "Track 2.m4a").read_bytes(), self.audio)
         with closing(sqlite3.connect(self.root / "watch_together.db")) as conn, conn:
             row = conn.execute("SELECT id,title,audio_url,cover_url FROM media_assets WHERE id=7").fetchone()
-            self.assertEqual(row[:3], (7, "旧视频 #1.mp4", ""))
-            self.assertEqual(row[3], migration.url("旧视频 #1.mp4", "cover.jpg"))
+            self.assertEqual(row[:3], (7, "旧视频 #1", ""))
+            self.assertEqual(row[3], migration.url("旧视频 #1", "cover.jpg"))
             self.assertEqual(conn.execute("SELECT count(*) FROM media_assets").fetchone()[0], 2)
-            self.assertEqual(conn.execute("SELECT video_url FROM room_state").fetchone()[0], migration.url("旧视频 #1.mp4", "旧视频 #1.mp4"))
+            self.assertEqual(conn.execute("SELECT video_url FROM room_state").fetchone()[0], migration.url("旧视频 #1", "旧视频 #1.mp4"))
         second = migration.build_plan(self.root)
         self.assertTrue(all(p["oldKey"] == p["newKey"] and not p["archived"] for p in second))
 
@@ -84,10 +84,15 @@ class LegacyMigrationTests(unittest.TestCase):
         self.work("Old song", {"audio.m4a": self.audio})
         plans = migration.build_plan(self.root)
         source = next(p for p in plans if p["oldKey"] == "Source.flac")
-        self.assertEqual(source["newKey"], "Source.flac")
+        self.assertEqual(source["newKey"], "Source")
         song = next(p for p in plans if p["oldKey"] == "Old song")
-        self.assertEqual(song["newKey"], "Old song.m4a")
+        self.assertEqual(song["newKey"], "Old song")
         self.assertEqual(song["renames"], {"audio.m4a": "Old song.m4a"})
+        migration.migrate(self.root, plans, self.backup)
+        self.assertEqual((self.root / "media/work/Source/Source.m4a").read_bytes(), self.audio)
+        meta = json.loads((self.root / "media/work/Source/.meta.json").read_text())
+        self.assertEqual(meta["originalNames"]["Source.m4a"], "Source.flac")
+        self.assertFalse((self.root / "media/work/Source.flac").exists())
 
     def test_name_collision_refuses_without_mutation(self):
         old = self.work("Same", {"video.mp4": self.video})
@@ -105,7 +110,7 @@ class LegacyMigrationTests(unittest.TestCase):
 
     def test_database_failure_rolls_back_files_and_metadata(self):
         meta = {"title": "Before", "extra": "preserved"}
-        directory = self.work("Before", {"video.mp4": self.video, "audio.m4a": self.audio}, meta)
+        directory = self.work("Before.mp4", {"video.mp4": self.video, "audio.m4a": self.audio}, meta)
         with closing(sqlite3.connect(self.root / "watch_together.db")) as conn, conn:
             conn.executescript("CREATE TRIGGER reject_insert BEFORE INSERT ON media_assets BEGIN SELECT RAISE(ABORT,'injected failure'); END;")
         with self.assertRaises(sqlite3.IntegrityError):
@@ -113,7 +118,7 @@ class LegacyMigrationTests(unittest.TestCase):
         self.assertEqual((directory / "video.mp4").read_bytes(), self.video)
         self.assertEqual((directory / "audio.m4a").read_bytes(), self.audio)
         self.assertEqual(json.loads((directory / ".meta.json").read_text()), meta)
-        self.assertFalse((self.root / "media/work/Before.mp4").exists())
+        self.assertFalse((self.root / "media/work/Before").exists())
         self.assertFalse((self.backup / "result.json").exists())
 
 

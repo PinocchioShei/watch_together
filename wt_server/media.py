@@ -46,6 +46,14 @@ def validate_work_key(name: str) -> str:
     return name
 
 
+def normalize_work_name(name: str) -> str:
+    """A work is a title; media filenames keep their own format extensions."""
+    name = validate_work_key(name)
+    while Path(name).suffix.lower() in ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS:
+        name = Path(name).stem
+    return validate_work_key(name)
+
+
 @asynccontextmanager
 async def _import_lock():
     # Both legacy server ports write the same media tree. Lock publication across processes too.
@@ -674,7 +682,7 @@ def rename_media_work(
     conn: sqlite3.Connection, old_key: str, new_name: str
 ) -> dict[str, Any]:
     validate_work_key(old_key)
-    target_key = validate_work_key(new_name.strip())
+    target_key = normalize_work_name(new_name.strip())
 
     src_dir = MEDIA_WORK_SUBDIR / old_key
     if not src_dir.exists() or not src_dir.is_dir():
@@ -946,7 +954,7 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
             else:
                 if len(prepared) > 1 and not work_name.strip():
                     raise HTTPException(status_code=422, detail="A collection name is required for multiple files")
-                work_key = validate_work_key(work_name.strip() if len(prepared) > 1 else prepared[0][0])
+                work_key = normalize_work_name(work_name.strip() if len(prepared) > 1 else prepared[0][0])
                 work_dir = MEDIA_WORK_SUBDIR / work_key
                 if work_dir.exists():
                     raise HTTPException(status_code=409, detail="A work with this name already exists; append to it or choose another collection name")

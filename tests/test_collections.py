@@ -138,11 +138,11 @@ class CollectionIntegrationTests(unittest.TestCase):
     def assert_clean_staging(self):
         self.assertFalse(list((self.site / "media/tmp").glob("import_*")))
 
-    def test_single_video_uses_original_filename_without_extracted_audio(self):
+    def test_single_video_work_uses_stem_and_media_keeps_original_filename(self):
         filename = "单集 #1.mp4"
         status, result = self.upload([(filename, self.video)])
         self.assertEqual(status, 200, result)
-        self.assertEqual(result["workKey"], filename)
+        self.assertEqual(result["workKey"], "单集 #1")
         self.assertEqual(self.local_path(result["videoUrl"]).name, filename)
         self.assertEqual(result["audioTracks"], [])
         self.assertEqual(result["audioUrl"], "")
@@ -152,7 +152,7 @@ class CollectionIntegrationTests(unittest.TestCase):
     def test_audio_keeps_original_display_name_after_conversion(self):
         status, result = self.upload([("Original song.wav", self.audio)], media_type="music")
         self.assertEqual(status, 200, result)
-        self.assertEqual(result["workKey"], "Original song.wav")
+        self.assertEqual(result["workKey"], "Original song")
         self.assertEqual(self.local_path(result["audioUrl"]).name, "Original song.m4a")
         items = self.request("/api/media", token=self.owner)[1]["items"]
         item = next(item for item in items if item["workKey"] == result["workKey"])
@@ -202,6 +202,19 @@ class CollectionIntegrationTests(unittest.TestCase):
         self.assertEqual(self.upload([("duplicate.mp4", self.video), ("DUPLICATE.mp4", self.video)], work_name="Duplicate batch")[0], 409)
         self.assertFalse((self.site / "media/work/Duplicate batch").exists())
         self.assert_clean_staging()
+
+    def test_work_titles_strip_only_media_extensions_on_both_apis(self):
+        for index, endpoint in enumerate(("/api/import", "/api/admin/import")):
+            name = f"Version.1.{index}"
+            status, result = self.upload([(name + ".wav", self.audio)], endpoint=endpoint)
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["workKey"], name)
+            self.assertEqual(self.local_path(result["audioUrl"]).name, name + ".m4a")
+            self.assertEqual(self.upload([(name + ".mp4", self.video)], endpoint=endpoint)[0], 409)
+            status, result = self.upload([("A.mp4", self.video), ("B.mp4", self.video)],
+                                         endpoint=endpoint, work_name=f"Season.{index}.MP4")
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["workKey"], f"Season.{index}")
 
     def test_invalid_media_cleans_temporary_files_without_partial_work(self):
         status, _ = self.upload([("valid.mp4", self.video), ("invalid.mp4", b"not a media file")], work_name="Invalid batch")
@@ -267,9 +280,9 @@ class CollectionIntegrationTests(unittest.TestCase):
                         time.sleep(0.1)
                 library = self.request("/api/media", token=self.owner, origin=origin)[1]["items"]
                 for name in restart_names:
-                    item = next(item for item in library if item["workKey"] == name)
+                    item = next(item for item in library if item["workKey"] == Path(name).stem)
                     self.assertIsNotNone(item["id"], item)
-                    self.assertEqual(item["name"], name)
+                    self.assertEqual(item["name"], Path(name).stem)
                     self.assertEqual(self.local_path(item["videoUrl"]).name, name)
                 fields = {"import_mode": "append", "target_work_key": created["workKey"]}
                 with ThreadPoolExecutor(max_workers=2) as pool:

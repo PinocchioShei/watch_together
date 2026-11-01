@@ -667,3 +667,9 @@
 - Documented migration and recovery. Bumped user/admin frontend build and module URLs to `20261101b`.
 - Migrated the local 48-work library: renamed 40 single-file works, retained all 8 audio collections, archived 34 extracted audio files (2,071,920,110 bytes), removed 5 stale index rows and indexed 3 previously unindexed works. Full independent backup: `backups/legacy-media-20261101-b`.
 - Validation: all 18 regressions passed. Backup and retained media passed SHA-256 checks; restarted 8090/8091 and verified all 142 media files via HTTP Range, all 48 covers and all 48 append targets. Library now has 36 video works and 12 audio works, with no mixed works. Account/session/room tables remained unchanged.
+
+## 2026-11-01 — Work titles without media extensions
+- Work titles now omit trailing media extensions for single uploads, named collections and administrator renames. Resource filenames and original-name metadata keep their extensions; ordinary dots/version numbers are preserved, and title collisions are rejected.
+- Updated the offline migration and naming documentation. Bumped user/admin frontend build and module references to `20261101c`. This change is local only, without a remote push.
+- Applied to 40 existing work directories/titles with synchronized media/cover URLs; all 142 resource filenames and bytes remain unchanged. Full independent backup: `backups/legacy-media-20261101-c`.
+- Validation: all 19 regressions passed, including both upload APIs, preserved version numbers, title conflicts and migration rollback. Restarted 8090/8091 and verified all 48 works/append targets, 142 HTTP Range responses and 48 covers; account/session/room tables are unchanged.
