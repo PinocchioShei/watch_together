@@ -681,3 +681,8 @@
 - Updated storage/deployment documentation and user/admin build/module versions to `20261101d`.
 - Migrated all 48 existing works into category directories (movie 18, ASMR 17, RJ 7, music 4, shot 2), without changing resource filenames or bytes. Independent full media/SQLite backup: `backups/media-categories-20261101-d`; backup and migrated files passed SHA-256 verification.
 - Validation: all 27 regression/browser tests passed, including category moves, rollback, old URLs and synchronization. Restarted 8090/8091 and verified 142 media HTTP Range responses, 142 old media links, 48 covers and 48 append targets. Work IDs/titles/categories and account/session/room tables are unchanged; both pages serve build `20261101d`.
+
+## 2026-11-01 — Fix administrator work names and media badges
+- Fixed media cards and details showing `legacy` after category-directory migration. Display the API's workKey/mediaKey/name directly instead of parsing the former flat URL layout.
+- Replaced Yes/No presence badges with `video`/`audio` labels for available media, including light/dark theme styles. Bumped user/admin frontend build and module references to `20261101e`.
+- Validation: the existing end-to-end browser regression passed with added work-title/detail and badge checks. Backed up SQLite and all 48 work metadata files before restarting 8090/8091. Rendered both live admin pages using read-only library responses and verified all 48 card/detail names, 36 video badges, 12 audio badges and dark theme; media index fields remain unchanged except normal startup updated_at refreshes. Both user/admin pages serve build `20261101e`, with clean startup logs.

@@ -75,6 +75,12 @@ class CollectionBrowserTests(unittest.TestCase):
         admin = self.page(f.admin, admin=True)
         expect(admin.locator("#dashboard")).to_be_visible()
         admin.locator("button[data-tab=media]").click()
+        video_card = admin.locator(".admin-media-card").filter(has_text="UI Videos")
+        expect(video_card.locator(".admin-media-name")).to_have_text("UI Videos")
+        expect(video_card.locator(".state-badge")).to_have_text("video")
+        video_card.click()
+        expect(admin.locator(".media-detail-row").filter(has=admin.locator("b", has_text="Work"))).to_have_text("WorkUI Videos")
+        admin.locator("#mediaDetailClose").click()
         wav = io.BytesIO()
         with wave.open(wav, "wb") as audio:
             audio.setnchannels(1)
@@ -88,6 +94,11 @@ class CollectionBrowserTests(unittest.TestCase):
         admin.locator("#importType").select_option("music")
         admin.locator("#adminWorkName").fill("UI Audio")
         self.assertEqual(self.upload(admin, admin=True)["mediaKind"], "audio")
+        admin.locator("#mediaTypeFilter").select_option("all")
+        audio_card = admin.locator(".admin-media-card").filter(has_text="UI Audio")
+        expect(audio_card.locator(".admin-media-name")).to_have_text("UI Audio")
+        expect(audio_card.locator(".state-badge")).to_have_text("audio")
+        expect(admin.locator(".state-badge.yes, .state-badge.no")).to_have_count(0)
 
         # Both actual forms append to the same video work with the same request model.
         for page, is_admin, mode_id, target_id, file_id, filename in (

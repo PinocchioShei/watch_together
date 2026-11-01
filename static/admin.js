@@ -1,4 +1,4 @@
-import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101d";
+import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101e";
 import { escapeHtml, formatBytes } from "./js/admin/helpers.js";
 
 const state = {
@@ -140,15 +140,8 @@ function normalizeMediaType(value) {
   return raw;
 }
 
-function parseWorkPath(url) {
-  if (!url) return { work: "-", file: "-" };
-  const m = String(url).match(/^\/media\/work\/([^/]+)\/([^/]+)$/);
-  if (!m) return { work: "legacy", file: url };
-  try {
-    return { work: decodeURIComponent(m[1]), file: decodeURIComponent(m[2]) };
-  } catch {
-    return { work: m[1], file: m[2] };
-  }
+function mediaWorkName(item) {
+  return item.workKey || item.mediaKey || item.name || "-";
 }
 
 function displayMediaUrl(url) {
@@ -182,9 +175,7 @@ function closeMediaDetail() {
 function openMediaDetail(item) {
   if (!item || !mediaDetailOverlay || !mediaDetailBody) return;
   activeMediaItem = item;
-  const v = parseWorkPath(item.videoUrl || "");
-  const a = parseWorkPath(item.audioUrl || "");
-  const workFolder = v.work !== "-" ? v.work : a.work;
+  const workFolder = mediaWorkName(item);
   const cover = item.coverUrl || "";
   const rows = [
     ["_cover", cover],
@@ -448,11 +439,9 @@ async function loadMedia() {
   mediaItems = visible;
   let html = "<div class=\"media-card-grid\">";
   visible.forEach((m, idx) => {
-    const v = parseWorkPath(m.videoUrl || "");
-    const a = parseWorkPath(m.audioUrl || "");
-    const workFolder = v.work !== "-" ? v.work : a.work;
-    const videoState = v.file && v.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
-    const audioState = a.file && a.file !== "-" ? '<span class="state-badge yes">Yes</span>' : '<span class="state-badge no">No</span>';
+    const workFolder = mediaWorkName(m);
+    const videoState = m.videoUrl ? '<span class="state-badge video">video</span>' : "";
+    const audioState = m.audioUrl ? '<span class="state-badge audio">audio</span>' : "";
     html += `
       <button type="button" class="admin-media-card" data-media-index="${idx}">
         <div class="admin-media-cover-wrap">
