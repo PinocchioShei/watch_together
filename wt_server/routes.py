@@ -4,7 +4,6 @@ import json
 import logging
 import sqlite3
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
 
 from fastapi import (
     Depends,
@@ -32,6 +31,7 @@ from .auth import (
 )
 from .config import (
     ADMIN_PASSWORD,
+    IMPORT_MAX_FILES,
     ADMIN_USERNAME,
     MEDIA_DIR,
     RESOURCE_DIR,
@@ -42,11 +42,11 @@ from .config import (
 from .media import (
     backfill_work_meta,
     collect_media_files,
-    derive_audio_track_index,
-    import_media_file,
+    derive_media_track_index,
+    import_media_files,
     is_audio_media_url,
     is_valid_media_url,
-    list_appendable_audio_works,
+    list_appendable_works,
     list_media_library,
     migrate_media_layout,
     normalize_media_url,
@@ -74,9 +74,7 @@ from .utils import dt_to_str, now_utc, str_to_dt
 
 SYNC_LOGGER = logging.getLogger("watch_together.sync")
 if not SYNC_LOGGER.handlers:
-    handler = RotatingFileHandler(
-        SYNC_LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8"
-    )
+    handler = logging.FileHandler(SYNC_LOG_FILE, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     SYNC_LOGGER.addHandler(handler)
     SYNC_LOGGER.setLevel(logging.INFO)
@@ -101,7 +99,7 @@ def safe_float(value, default: float = 0.0) -> float:
 
 
 def attach_track_index(payload: dict, media_url: str) -> dict:
-    track_index = derive_audio_track_index(media_url)
+    track_index = derive_media_track_index(media_url)
     if track_index is not None:
         payload["trackIndex"] = track_index
     return payload
@@ -397,7 +395,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/admin/media/append-targets")
     def admin_append_targets(_: str = Depends(require_admin)):
-        return {"items": list_appendable_audio_works()}
+        return {"items": list_appendable_works(), "maxFiles": IMPORT_MAX_FILES}
 
     @app.get("/api/admin/rooms")
     async def admin_rooms(_: str = Depends(require_admin)):
@@ -467,10 +465,9 @@ def create_app() -> FastAPI:
 
         conn = db_conn()
         try:
-            row = conn.execute(
-                "SELECT id FROM media_assets WHERE video_url LIKE ? OR audio_url LIKE ? ORDER BY updated_at DESC LIMIT 1",
-                (f"/media/work/{media_key}/%", f"/media/work/{media_key}/%"),
-            ).fetchone()
+            row = next((entry for entry in conn.execute(
+                "SELECT id, video_url, audio_url FROM media_assets ORDER BY updated_at DESC"
+            ).fetchall() if stem_from_media_url(entry["video_url"] or entry["audio_url"] or "") == media_key), None)
             now_str = dt_to_str(now_utc())
             if row:
                 conn.execute(
@@ -510,11 +507,12 @@ def create_app() -> FastAPI:
             if work_dir.exists() and work_dir.is_dir():
                 meta_path = work_dir / ".meta.json"
                 try:
-                    meta_payload = {
+                    meta_payload = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+                    meta_payload.update({
                         "mediaType": media_type,
                         "title": media_key,
                         "updatedAt": now_str,
-                    }
+                    })
                     meta_path.write_text(
                         json.dumps(meta_payload, ensure_ascii=False), encoding="utf-8"
                     )
@@ -553,16 +551,16 @@ def create_app() -> FastAPI:
 
     @app.post("/api/admin/import")
     async def admin_import(
-        file: UploadFile = File(...),
+        file: list[UploadFile] = File(...),
         media_type: str = Form("movie"),
         import_mode: str = Form("create"),
         target_work_key: str = Form(""),
+        work_name: str = Form(""),
         cover: UploadFile | None = File(default=None),
         _: str = Depends(require_admin),
     ):
-        return await import_media_file(
-            file, media_type, cover, import_mode, target_work_key
-        )
+        return await import_media_files(file, media_type, cover, import_mode, target_work_key, work_name)
+
 
     @app.post("/api/register")
     def register(payload: RegisterPayload):
@@ -841,6 +839,7 @@ def create_app() -> FastAPI:
                 {
                     "videoUrl": safe_video_url,
                     "playMode": play_mode,
+                    "albumMode": audio_album_mode,
                     "audioAlbumMode": audio_album_mode,
                     "currentTime": state["current_time_sec"],
                     "isPlaying": bool(state["is_playing"]),
@@ -929,15 +928,23 @@ def create_app() -> FastAPI:
             await broadcast_room_members(room_id)
         return {"ok": True, "roomDeleted": deleted}
 
+    @app.get("/api/media/append-targets")
+    def append_targets(user: User = Depends(require_user)):
+        return {"items": list_appendable_works(), "maxFiles": IMPORT_MAX_FILES}
+
+    @app.post("/api/import")
     @app.post("/api/upload-video")
     async def upload_video(
-        file: UploadFile = File(...),
-        media_type: str = File("movie"),
+        file: list[UploadFile] = File(...),
+        media_type: str = Form("movie"),
+        import_mode: str = Form("create"),
+        target_work_key: str = Form(""),
+        work_name: str = Form(""),
         cover: UploadFile | None = File(default=None),
         user: User = Depends(require_user),
     ):
-        del user
-        return await import_media_file(file, media_type, cover)
+        return await import_media_files(file, media_type, cover, import_mode, target_work_key, work_name)
+
 
     @app.websocket("/ws/rooms/{room_id}")
     async def room_ws(websocket: WebSocket, room_id: int, token: str | None = None):
@@ -1009,6 +1016,7 @@ def create_app() -> FastAPI:
                     "type": "state",
                     "videoUrl": initial_video_url,
                     "playMode": initial_play_mode,
+                    "albumMode": initial_audio_album_mode,
                     "audioAlbumMode": initial_audio_album_mode,
                     "currentTime": state["current_time_sec"] if state else 0,
                     "isPlaying": bool(state["is_playing"]) if state else False,
@@ -1025,6 +1033,7 @@ def create_app() -> FastAPI:
                     "type": "state",
                     "videoUrl": initial_video_url,
                     "playMode": initial_play_mode,
+                    "albumMode": initial_audio_album_mode,
                     "audioAlbumMode": initial_audio_album_mode,
                     "currentTime": state["current_time_sec"] if state else 0,
                     "isPlaying": bool(state["is_playing"]) if state else False,
@@ -1061,11 +1070,7 @@ def create_app() -> FastAPI:
                     action_id = int(payload.get("actionId", 0))
                     video_url = str(payload.get("videoUrl", "")).strip()[:500]
                     video_url = normalize_media_url(video_url)
-                    play_mode = str(payload.get("playMode", "video")).strip().lower()
-                    if play_mode not in {"video", "audio"}:
-                        play_mode = (
-                            "audio" if is_audio_media_url(video_url) else "video"
-                        )
+                    play_mode = "audio" if is_audio_media_url(video_url) else "video"
                     if not is_valid_media_url(video_url):
                         sync_log(
                             "ws_sync_reject_invalid_url",
@@ -1086,14 +1091,14 @@ def create_app() -> FastAPI:
                     current_time = max(float(payload.get("currentTime", 0)), 0)
                     is_playing = bool(payload.get("isPlaying", False))
                     audio_album_mode = normalize_audio_album_mode(
-                        str(payload.get("audioAlbumMode", "stop"))
+                        str(payload.get("albumMode", payload.get("audioAlbumMode", "stop")))
                     )
 
                     up_conn = db_conn()
                     should_broadcast_state = False
                     try:
                         latest_state = up_conn.execute(
-                            "SELECT controller_user_id, video_url, audio_album_mode, current_time, is_playing FROM room_state WHERE room_id = ?",
+                            'SELECT controller_user_id, video_url, audio_album_mode, "current_time" AS position, is_playing FROM room_state WHERE room_id = ?',
                             (room_id,),
                         ).fetchone()
                         active_controller = (
@@ -1123,9 +1128,7 @@ def create_app() -> FastAPI:
                                 currentTime=current_time,
                                 isPlaying=is_playing,
                             )
-                        if play_mode != "audio":
-                            audio_album_mode = "stop"
-                        elif not video_url and existing_audio_album_mode:
+                        if not video_url and existing_audio_album_mode:
                             audio_album_mode = existing_audio_album_mode
                         if active_controller is not None and not await hub.has_user(
                             room_id, int(active_controller)
@@ -1150,17 +1153,18 @@ def create_app() -> FastAPI:
                                     attach_track_index(
                                         {
                                             "type": "state",
-                                            "videoUrl": video_url,
-                                            "playMode": play_mode,
-                                            "audioAlbumMode": audio_album_mode,
-                                            "currentTime": current_time,
-                                            "isPlaying": is_playing,
+                                            "videoUrl": existing_video_url,
+                                            "playMode": "audio" if is_audio_media_url(existing_video_url) else "video",
+                                            "albumMode": existing_audio_album_mode,
+                                            "audioAlbumMode": existing_audio_album_mode,
+                                            "currentTime": latest_state["position"],
+                                            "isPlaying": bool(latest_state["is_playing"]),
                                             "updatedAt": dt_to_str(now_utc()),
                                             "controllerUserId": active_controller,
                                             "actionId": action_id,
                                             "by": "controller-locked",
                                         },
-                                        video_url,
+                                        existing_video_url,
                                     )
                                 )
                             )
@@ -1243,6 +1247,7 @@ def create_app() -> FastAPI:
                                 "type": "state",
                                 "videoUrl": video_url,
                                 "playMode": play_mode,
+                                "albumMode": audio_album_mode,
                                 "audioAlbumMode": audio_album_mode,
                                 "currentTime": current_time,
                                 "isPlaying": is_playing,

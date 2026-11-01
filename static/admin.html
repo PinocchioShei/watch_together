@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watch Together Admin</title>
-    <link rel="stylesheet" href="/static/admin.css?v=20260329c" />
+    <link rel="stylesheet" href="/static/admin.css?v=20261101a" />
   </head>
   <body>
     <div class="shell">
@@ -63,26 +63,28 @@
               <form id="importForm" class="inline-form">
                 <div class="import-file-row">
                   <label class="import-field">Media file (video/audio)
-                    <input id="importFile" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a" required />
+                    <input id="importFile" name="file" type="file" multiple accept="video/mp4,video/webm,video/ogg,video/quicktime,audio/mp3,audio/mpeg,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/flac,audio/x-flac,audio/mp4,.mp4,.webm,.ogg,.mov,.mp3,.aac,.wav,.m4a,.flac" required />
                   </label>
                   <label class="import-field">Cover image (optional)
-                    <input id="importCover" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
+                    <input id="importCover" name="cover" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" />
                   </label>
                 </div>
                 <div class="media-filter-row compact">
                   <label for="importMode">Import Mode</label>
-                  <select id="importMode">
-                    <option value="create" selected>Create new work</option>
-                    <option value="append_audio">Append to audio album</option>
+                  <select id="importMode" name="import_mode">
+                    <option value="create">Create new work / collection</option>
+                    <option value="append">Append to collection</option>
                   </select>
                 </div>
-                <div id="appendTargetRow" class="media-filter-row compact hidden">
-                  <label for="appendTargetWork">Target Work</label>
-                  <select id="appendTargetWork">
-                    <option value="">Select audio-only work</option>
-                  </select>
+                <div class="media-filter-row compact import-name-row">
+                  <label for="adminWorkName">Collection name</label>
+                  <input id="adminWorkName" name="work_name" maxlength="64" placeholder="Required when creating a collection" />
                 </div>
-                <select id="importType" required>
+                <div class="media-filter-row compact import-target-row hidden">
+                  <label for="appendTargetWork">Target collection</label>
+                  <select id="appendTargetWork" name="target_work_key"></select>
+                </div>
+                <select id="importType" name="media_type" required>
                   <option value="">Select type</option>
                   <option value="movie">movie</option>
                   <option value="RJ">RJ</option>
@@ -90,7 +92,7 @@
                   <option value="music">music</option>
                   <option value="shot">shot</option>
                 </select>
-                <p id="importHint" class="status">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
+                <p id="importHint" class="status import-hint">Type is required. Media accepts video/audio formats; cover accepts jpg/png.</p>
                 <button type="submit">Import Video/Audio</button>
                 <div id="adminImportProgressWrap" class="import-progress hidden" aria-live="polite">
                   <div class="import-progress-track">
@@ -140,10 +142,10 @@
       </div>
 
       <footer class="app-footer">
-        <span>Frontend Build: 20260329c</span>
+        <span>Frontend Build: 20261101a</span>
       </footer>
     </div>
 
-    <script type="module" src="/static/admin.js?v=20260329c" defer></script>
+    <script type="module" src="/static/admin.js?v=20261101a" defer></script>
   </body>
 </html>

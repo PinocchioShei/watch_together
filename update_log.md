@@ -602,8 +602,61 @@
 - This specifically targets cases where a track ended in multiplayer but the controller occasionally failed to advance the room to the next track.
 - Bumped static versions for cache refresh (`styles.css?v=20260329c`, `app.js?v=20260329c`, `admin.js?v=20260329c`, build label `20260329c`).
 
+## 2026-03-30 23:33
+- Fixed the local SEU-WLAN/DDNS background runner so it stays silent in the background.
+- Root cause: the scheduled `WatchTogether-DDNS-Runner` task was already hidden, but `tools/ddns_cf_runner.ps1` spawned a child `powershell.exe` without `-WindowStyle Hidden`, causing a visible window to pop up every cycle.
+- Updated the runner to launch its child DDNS script with `-WindowStyle Hidden`, preserving the existing periodic reconnect + DDNS behavior while eliminating recurring foreground PowerShell popups.
+- Bumped static versions for cache refresh (`styles.css?v=20260330a`, `app.js?v=20260330a`, `admin.js?v=20260330a`, build label `20260330a`).
+
 ## 2026-03-26 12:02
 - Relaxed previously strict client-side sync guards now that refresh/leave reset root cause has been resolved.
 - Removed `blockLocalSyncUntil` gate from playback sync path and reduced local override window from `1200ms` to `450ms` to improve responsiveness for seek/pause/play synchronization.
 - Tightened sync dispatch debounce from `40/120ms` to `20/60ms` (takeover/normal) for snappier cross-client reactions.
 - Bumped user static versions for cache refresh (`styles.css?v=20260326n`, `app.js?v=20260326n`, footer build `20260326n`).
+
+## 2026-05-21 00:00
+- Fixed pure-audio work playback for filenames containing reserved URL characters such as `#` (for example `RJ01206214/#2.m4a`): backend media URLs are now percent-encoded before being sent to the frontend, so browsers request the real file instead of treating `#...` as a fragment.
+- Changed pure-audio track listing to use natural filename order from the filesystem instead of historical append/meta order, so numbered tracks display as `#2`, `#3`, ..., `#10` rather than modification/import sequence.
+- Adjusted sync debug logging to avoid multi-process log rotation conflicts when ports `8090` and `8091` write to the same `sync.log`.
+- Bumped static versions for cache refresh (`styles.css?v=20260521a`, `app.js?v=20260521a`, `admin.css?v=20260521a`, `admin.js?v=20260521a`, build label `20260521a`).
+
+## 2026-05-22 19:10
+- Clarified the append-track naming issue: storage should keep the original uploaded filename, while UI display should decode percent-encoded media URLs for readability.
+- Fixed admin media detail display so work names, filenames, video/audio URLs, cover URLs, and pure-audio track paths are shown decoded (for example `%E3%...` and `%23` are displayed as their original characters) while encoded URLs are still kept for browser playback requests.
+- Restored `RJ01029894` appended track files back to their original uploaded names after the clarification.
+- Hardened `.meta.json` backfill so existing `audioTrackOrder` metadata is preserved during startup normalization.
+- Bumped static versions for cache refresh (`styles.css?v=20260522b`, `app.js?v=20260522b`, `admin.css?v=20260522b`, `admin.js?v=20260522b`, build label `20260522b`).
+
+## 2026-05-28 19:28
+- Added FLAC audio import support across backend validation and frontend upload pickers.
+- Updated user/admin import UX so `.flac` files are recognized as audio for progress estimation and included in unsupported-format guidance.
+- FLAC uploads are still normalized through the existing ffmpeg pipeline into browser-friendly AAC `.m4a` outputs.
+- Bumped static versions for cache refresh (`styles.css?v=20260528a`, `app.js?v=20260528a`, `admin.css?v=20260528a`, `admin.js?v=20260528a`, build label `20260528a`).
+
+## 2026-05-28 19:45
+- Added batch append import for admin audio albums: `Append to audio album` mode now allows selecting multiple audio files in one request.
+- Added a server-side batch limit of 30 files per append request (`ADMIN_APPEND_IMPORT_MAX_FILES`) to avoid oversized accidental imports.
+- Backend processes append batches sequentially and returns per-file success/failure details; one failed file no longer prevents later files in the same batch from being attempted.
+- Admin import UI now toggles multi-select only in append mode, validates the 30-file limit before upload, estimates processing time across the whole batch, and displays appended/failed counts after completion.
+- Bumped static versions for cache refresh (`styles.css?v=20260528b`, `app.js?v=20260528b`, `admin.css?v=20260528b`, `admin.js?v=20260528b`, build label `20260528b`).
+
+## 2026-05-28 20:02
+- Fixed a media-library duplication regression after batch append import: multiple `media_assets` rows pointing to the same work are now collapsed to one item when listing media.
+- Repaired the affected `ディメンション凸ラバース!!OST` DB state by removing duplicate media rows and keeping the newest row for the work.
+- Bumped static versions for cache refresh (`styles.css?v=20260528c`, `app.js?v=20260528c`, `admin.css?v=20260528c`, `admin.js?v=20260528c`, build label `20260528c`).
+
+## 2026-11-01
+- Updated the README to match Windows installation, the shared user/admin entry on port 8090, the work-based media layout, and directory preparation before first startup.
+- Added requirements.txt with the existing deployment's core Python versions, including an explicit WebSocket backend and multipart upload dependency.
+- Added docs/DEPLOYMENT.md covering environment variables, background startup, legacy two-port limitations, scheduled-task/DDNS paths, proxies/tunnels, verification, backup/restore, and troubleshooting.
+- Verified dependency installation, pip check, pages/static assets, admin initialization, users/rooms, WebSocket, audio upload/conversion, and HTTP Range in a disposable copy with a fresh CPython 3.14.3 environment; the running deployment was not used for this test.
+
+## 2026-11-01 — Video/audio collections and automatic playback
+- Added homogeneous video and audio collections with batch creation and append. User `/api/import` (legacy `/api/upload-video` alias) and admin `/api/admin/import` share the same implementation and multipart fields, with up to 30 files per request.
+- Single-file works use the original complete filename; multiple files require a collection name. Media keep their original filename stem, changing only the extension when normalized to MP4/M4A; original complete filenames remain available to the UI. Conflicts are rejected without overwriting or automatic suffixes.
+- New video imports retain their embedded soundtrack without creating a separate audio copy. Legacy mixed works remain playable and are excluded from append targets.
+- Replaced manual Video Mode / Audio Mode with automatic player selection. Both media kinds share track selection, previous/next, stop/next/repeat, and controller-based synchronized advancement and takeover.
+- Added batch staging/rollback and import locking across server processes. Preserved exact work names during startup and original-name metadata during category changes.
+- Added disposable backend/browser regression checks, collection API documentation and development dependencies. Updated deployment instructions and static build/version labels to `20261101a`.
+- Validation: all 13 integration/browser checks passed, including two-user playback and restart naming. Backed up the live SQLite database and 48 work metadata files, restarted 8090/8091, and verified pages, shared import fields, unchanged database row counts and all 225 historical media/cover files unchanged in path, size and modification time.
+- Recorded the project maintenance workflow in AGENTS.md: frontend version update, bilingual change logs, validation and service restart, then a local Git commit.

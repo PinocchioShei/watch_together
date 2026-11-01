@@ -1,0 +1,8 @@
+# Core runtime versions taken from the working deployment.
+# websockets is explicit: plain uvicorn does not install a WebSocket backend.
+fastapi==0.115.12
+starlette==0.46.2
+pydantic==2.12.5
+python-multipart==0.0.20
+uvicorn==0.34.0
+websockets==16.0

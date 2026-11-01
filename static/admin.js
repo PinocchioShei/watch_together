@@ -1,8 +1,10 @@
+import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101a";
 import { escapeHtml, formatBytes } from "./js/admin/helpers.js";
 
 const state = {
   token: sessionStorage.getItem("wt_admin_token") || "",
 };
+const MAX_APPEND_IMPORT_FILES = 30;
 let guestAuthOpen = false;
 const THEME_KEY = "wt_admin_theme";
 
@@ -24,12 +26,6 @@ const mediaDetailType = document.getElementById("mediaDetailType");
 const mediaDetailRename = document.getElementById("mediaDetailRename");
 const mediaDetailDelete = document.getElementById("mediaDetailDelete");
 const mediaTypeFilter = document.getElementById("mediaTypeFilter");
-const importModeSelect = document.getElementById("importMode");
-const appendTargetRow = document.getElementById("appendTargetRow");
-const appendTargetWorkSelect = document.getElementById("appendTargetWork");
-const importTypeSelect = document.getElementById("importType");
-const importCoverInput = document.getElementById("importCover");
-const importHint = document.getElementById("importHint");
 const themeToggleBtn = document.getElementById("themeToggleBtn");
 const adminImportProgressWrap = document.getElementById("adminImportProgressWrap");
 const adminImportProgressBar = document.getElementById("adminImportProgressBar");
@@ -41,11 +37,8 @@ const tabPanels = {
   rooms: document.getElementById("tab-rooms"),
 };
 let mediaItems = [];
-let allMediaItems = [];
-let appendableAudioWorks = [];
 let activeMediaItem = null;
 let adminImportProcessingTimer = null;
-let selectedImportFileStamp = "";
 
 function applyTheme(theme) {
   const next = theme === "dark" ? "dark" : "light";
@@ -94,7 +87,7 @@ function formatImportError(detail) {
     return "Import failed: invalid type. Choose movie/RJ/ASMR/music/shot.";
   }
   if (lower.includes("only supported video/audio formats")) {
-    return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a.";
+    return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a/flac.";
   }
   if (lower.includes("file too large")) {
     return "Import failed: file too large (max 1.5GB).";
@@ -121,13 +114,16 @@ function formatImportError(detail) {
     return "Append failed: cover upload is not supported in append mode.";
   }
   if (lower.includes("append target not found")) {
-    return "Append failed: selected audio-only work no longer exists.";
+    return "Append failed: selected collection no longer exists.";
   }
   if (lower.includes("append mode is only available for audio-only works")) {
     return "Append failed: target must be an existing audio-only work.";
   }
   if (lower.includes("append mode only accepts audio-only files")) {
     return "Append failed: only audio-only files can be appended to an audio album.";
+  }
+  if (lower.includes("too many files selected")) {
+    return `Append failed: too many files selected. Select at most ${MAX_APPEND_IMPORT_FILES} files at once.`;
   }
   return `Import failed: ${msg}`;
 }
@@ -148,7 +144,21 @@ function parseWorkPath(url) {
   if (!url) return { work: "-", file: "-" };
   const m = String(url).match(/^\/media\/work\/([^/]+)\/([^/]+)$/);
   if (!m) return { work: "legacy", file: url };
-  return { work: m[1], file: m[2] };
+  try {
+    return { work: decodeURIComponent(m[1]), file: decodeURIComponent(m[2]) };
+  } catch {
+    return { work: m[1], file: m[2] };
+  }
+}
+
+function displayMediaUrl(url) {
+  const raw = String(url || "");
+  if (!raw) return "-";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function getTrackLabel(trackUrl, index) {
@@ -161,67 +171,7 @@ function getTrackLabel(trackUrl, index) {
   }
 }
 
-function isPureAudioAlbum(item) {
-  return !!item && !item.videoUrl && Array.isArray(item.audioTracks) && item.audioTracks.length > 0;
-}
 
-function getWorkKey(item) {
-  const v = parseWorkPath(item?.videoUrl || "");
-  const a = parseWorkPath(item?.audioUrl || "");
-  return v.work !== "-" ? v.work : a.work;
-}
-
-function refreshAppendTargetOptions() {
-  if (!appendTargetWorkSelect) return;
-  const previous = appendTargetWorkSelect.value;
-  const albums = [...appendableAudioWorks]
-    .sort((a, b) => String(a.name || a.workKey).localeCompare(String(b.name || b.workKey), "zh-CN"));
-  appendTargetWorkSelect.innerHTML = '<option value="">Select audio-only work</option>';
-  albums.forEach((item) => {
-    const workKey = item.workKey || getWorkKey(item);
-    if (!workKey || workKey === "-" || workKey === "legacy") return;
-    const option = document.createElement("option");
-    option.value = workKey;
-    const countText = Number(item.trackCount || 0) > 0 ? `${item.trackCount} tracks` : "0 tracks";
-    option.textContent = `${item.name || workKey} (${workKey}, ${countText})`;
-    appendTargetWorkSelect.appendChild(option);
-  });
-  if (previous && Array.from(appendTargetWorkSelect.options).some((opt) => opt.value === previous)) {
-    appendTargetWorkSelect.value = previous;
-  } else if (!appendTargetWorkSelect.value && appendTargetWorkSelect.options.length > 1) {
-    appendTargetWorkSelect.value = appendTargetWorkSelect.options[1].value;
-  }
-}
-
-function refreshImportModeUI() {
-  const appendMode = importModeSelect?.value === "append_audio";
-  if (appendTargetRow) appendTargetRow.classList.toggle("hidden", !appendMode);
-  if (appendTargetWorkSelect) {
-    appendTargetWorkSelect.disabled = !appendMode;
-    if (appendMode && !appendTargetWorkSelect.value && appendTargetWorkSelect.options.length > 1) {
-      appendTargetWorkSelect.value = appendTargetWorkSelect.options[1].value;
-    }
-  }
-  if (importCoverInput) {
-    importCoverInput.disabled = appendMode;
-    if (appendMode) {
-      importCoverInput.value = "";
-    }
-  }
-  if (importTypeSelect) {
-      importTypeSelect.disabled = appendMode;
-    if (appendMode) {
-      const targetItem = appendableAudioWorks.find((item) => item.workKey === appendTargetWorkSelect?.value)
-        || allMediaItems.find((item) => getWorkKey(item) === appendTargetWorkSelect?.value);
-      importTypeSelect.value = targetItem?.type || "music";
-    }
-  }
-  if (importHint) {
-    importHint.textContent = appendMode
-      ? "Append mode only accepts audio-only files and existing audio-only works. Cover upload is disabled."
-      : "Type is required. Media accepts video/audio formats; cover accepts jpg/png.";
-  }
-}
 
 function closeMediaDetail() {
   activeMediaItem = null;
@@ -242,16 +192,17 @@ function openMediaDetail(item) {
     ["Type", item.type || "movie"],
     ["Name", item.name || "-"],
     ["Media Key", item.mediaKey || "-"],
-    ["Video URL", item.videoUrl || "-"],
-    ["Audio URL", item.audioUrl || "-"],
-    ["Cover URL", item.coverUrl || "-"],
+    ["Video URL", displayMediaUrl(item.videoUrl)],
+    ["Audio URL", displayMediaUrl(item.audioUrl)],
+    ["Cover URL", displayMediaUrl(item.coverUrl)],
     ["Size", formatBytes(item.size || 0)],
     ["Duration", `${Math.round(Number(item.duration || 0))}s`],
     ["Updated At", item.updatedAt || "-"],
   ];
-  if (!item.videoUrl && Array.isArray(item.audioTracks) && item.audioTracks.length) {
-    item.audioTracks.forEach((trackUrl, index) => {
-      rows.push([getTrackLabel(trackUrl, index), trackUrl || "-"]);
+  const collectionUrls = item.videoUrl ? item.videoTracks : item.audioTracks;
+  if (Array.isArray(collectionUrls)) {
+    collectionUrls.forEach((trackUrl, index) => {
+      rows.push([item.originalNames?.[trackUrl] || getTrackLabel(trackUrl, index), displayMediaUrl(trackUrl)]);
     });
   }
   mediaDetailBody.innerHTML = rows.map(([k, val]) => {
@@ -362,22 +313,11 @@ function estimateServerProcessingSeconds(file) {
   const sizeMb = Math.max(1, Math.round((Number(file?.size || 0) / 1024 / 1024)));
   const mime = String(file?.type || "").toLowerCase();
   const name = String(file?.name || "").toLowerCase();
-  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/.test(name);
+  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg|flac)$/.test(name);
   if (isAudio) {
     return Math.max(10, Math.min(240, Math.round(sizeMb * 0.35 + 8)));
   }
   return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
-}
-
-function importFileStamp(file) {
-  if (!file) return "";
-  return `${file.name}::${file.size}::${file.lastModified}`;
-}
-
-function expectedStageFromProfile(profile = {}, transcoded = false) {
-  const hasVideo = String(profile.videoCodec || "none") !== "none";
-  if (!hasVideo) return "Saving";
-  return transcoded ? "Transcoding" : "Saving";
 }
 
 function startAdminImportProcessingTicker(estimatedSeconds = 0) {
@@ -455,32 +395,6 @@ function xhrUpload(url, formData, onServerProcessingStart = null) {
   });
 }
 
-const adminImportFileInput = document.getElementById("importFile");
-if (adminImportFileInput) {
-  adminImportFileInput.addEventListener("change", () => {
-    const file = adminImportFileInput.files && adminImportFileInput.files[0] ? adminImportFileInput.files[0] : null;
-    selectedImportFileStamp = importFileStamp(file);
-  });
-}
-
-if (importModeSelect) {
-  importModeSelect.addEventListener("change", async () => {
-    if (importModeSelect.value === "append_audio") {
-      try {
-        await loadAppendTargets();
-      } catch (err) {
-        setImportMsg(err?.message || "Failed to load append targets.", true);
-      }
-    }
-    refreshImportModeUI();
-  });
-}
-
-if (appendTargetWorkSelect) {
-  appendTargetWorkSelect.addEventListener("change", () => {
-    refreshImportModeUI();
-  });
-}
 
 async function loadOverview() {
   const data = await api("/api/admin/overview", { method: "GET" });
@@ -527,9 +441,6 @@ async function loadUsers() {
 async function loadMedia() {
   const data = await api("/api/admin/media", { method: "GET" });
   const rows = data.items || [];
-  allMediaItems = rows;
-  refreshAppendTargetOptions();
-  refreshImportModeUI();
   const selectedType = mediaTypeFilter ? (mediaTypeFilter.value || "movie") : "movie";
   const visible = selectedType === "all"
     ? rows
@@ -638,10 +549,7 @@ async function loadMedia() {
 }
 
 async function loadAppendTargets() {
-  const data = await api("/api/admin/media/append-targets", { method: "GET" });
-  appendableAudioWorks = data.items || [];
-  refreshAppendTargetOptions();
-  refreshImportModeUI();
+  await importController.refreshTargets();
 }
 
 async function loadRooms() {
@@ -782,76 +690,32 @@ document.getElementById("updateAdminForm").onsubmit = async (e) => {
   }
 };
 
-document.getElementById("importForm").onsubmit = async (e) => {
-  e.preventDefault();
-  const fileInput = document.getElementById("importFile");
-  const typeSelect = document.getElementById("importType");
-  const coverInput = document.getElementById("importCover");
-  const appendMode = importModeSelect?.value === "append_audio";
-  const targetWorkKey = appendTargetWorkSelect?.value || "";
-  if (!fileInput.files || !fileInput.files[0]) {
-    setImportMsg("Choose a file first.", true);
-    return;
-  }
-  if (appendMode && !targetWorkKey) {
-    setImportMsg("Choose an existing audio-only work first.", true);
-    return;
-  }
-  if (!appendMode && !typeSelect.value) {
-    setImportMsg("Choose media type first.", true);
-    return;
-  }
-  try {
+const importController = createImportForm({
+  form: document.getElementById("importForm"), api,
+  endpoint: "/api/admin/import", targetsPath: "/api/admin/media/append-targets",
+  upload: xhrUpload, estimateSeconds: estimateServerProcessingSeconds,
+  onStart: () => {
     hideAdminImportProgress();
     setAdminImportProgress(0, "Preparing upload...");
-    const selectedFile = fileInput.files[0];
-    const currentStamp = importFileStamp(selectedFile);
-    if (selectedImportFileStamp && currentStamp !== selectedImportFileStamp) {
-      setImportMsg("Selected file changed during upload preparation. Please submit again.", true);
-      return;
-    }
-    const estimatedSeconds = estimateServerProcessingSeconds(selectedFile);
-    setImportMsg("Importing and transcoding...");
-    const fd = new FormData();
-    fd.append("file", selectedFile);
-    fd.append("import_mode", appendMode ? "append_audio" : "create");
-    fd.append("media_type", appendMode ? (typeSelect.value || "music") : typeSelect.value);
-    if (appendMode) {
-      fd.append("target_work_key", targetWorkKey);
-    }
-    if (!appendMode && coverInput.files && coverInput.files[0]) {
-      fd.append("cover", coverInput.files[0]);
-    }
-    const data = await xhrUpload("/api/admin/import", fd, () => {
-      startAdminImportProcessingTicker(estimatedSeconds);
-      setImportMsg(`${appendMode ? "Upload finished. Server is appending/transcoding audio" : "Upload finished. Server is processing/transcoding media"} (~${estimatedSeconds}s estimate), please wait...`);
-    });
+    setImportMsg("Importing collection...");
+  },
+  onProcessing: (seconds) => {
+    startAdminImportProcessingTicker(seconds);
+    setImportMsg("Upload complete. Processing media, please wait...");
+  },
+  onSuccess: async (result) => {
     stopAdminImportProcessingTicker();
-    const profile = data.profile || {};
-    const expectedStage = expectedStageFromProfile(profile, !!data.transcoded);
-    setAdminImportProgress(100, `Server processing complete (${expectedStage}). Finalizing...`);
-    const mode = data.videoUrl ? "video/audio" : "audio-only";
-    const transcodeText = data.transcoded ? "transcoded" : "direct import";
-    if (appendMode) {
-      setImportMsg(
-        `Appended track to ${data.targetWorkKey || targetWorkKey} (${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
-      );
-    } else {
-      setImportMsg(
-        `Imported (${mode}, ${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
-      );
-    }
-    fileInput.value = "";
-    coverInput.value = "";
+    setAdminImportProgress(100, "Import complete.");
+    setImportMsg(importResultMessage(result));
     await loadMedia();
-    await loadAppendTargets();
     await loadOverview();
     setTimeout(hideAdminImportProgress, 1200);
-  } catch (err) {
+  },
+  onError: (error) => {
     hideAdminImportProgress();
-    setImportMsg(formatImportError(err?.message), true);
-  }
-};
+    setImportMsg(formatImportError(error?.message), true);
+  },
+});
 
 if (state.token) {
   setAuthUI(true);

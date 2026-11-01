@@ -1,6 +1,8 @@
+import { collectionTracks, collectionMode, collectionLabel } from "./js/app/collections.js?v=20261101a";
+import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101a";
 import { normalizeUrl, toMediaPath } from "./js/shared/format.js";
 import { clearRoomSession, createTabLock, readRoomSession, saveRoomSession } from "./js/app/session.js";
-import { createApiClient } from "./js/app/api-client.js";
+import { createApiClient } from "./js/app/api-client.js?v=20261101a";
 import { createAuthModule } from "./js/app/auth-module.js";
 import { createLobbyModule } from "./js/app/lobby-module.js";
 import { createChatModule } from "./js/app/chat-module.js";
@@ -11,17 +13,17 @@ const state = {
   roomId: null,
   ws: null,
   suppressVideoEvents: false,
+  playbackVersion: 0,
   syncTimer: null,
   controllerUserId: null,
   forceTakeover: false,
   roomDisplayNo: null,
-  localOverrideUntil: 0,
   roomMeta: new Map(),
   mediaLibrary: [],
   activeMediaUrl: "",
   activeMediaId: null,
   activeTrackIndex: 0,
-  audioAlbumMode: "stop",
+  albumMode: "stop",
   lastSyncedMediaPath: "",
   playMode: "video",
   localActionCounter: 0,
@@ -58,21 +60,17 @@ const roomPanel = document.getElementById("roomPanel");
 const currentRoomTitle = document.getElementById("currentRoomTitle");
 const videoPlayer = document.getElementById("videoPlayer");
 const audioPlayer = document.getElementById("audioPlayer");
-const audioTrackRow = document.getElementById("audioTrackRow");
-const audioTrackSelect = document.getElementById("audioTrackSelect");
-const audioAlbumModeRow = document.getElementById("audioAlbumModeRow");
-const audioAlbumModeSelect = document.getElementById("audioAlbumModeSelect");
-const modeVideoBtn = document.getElementById("modeVideoBtn");
-const modeAudioBtn = document.getElementById("modeAudioBtn");
+const collectionTrackRow = document.getElementById("collectionTrackRow");
+const collectionTrackSelect = document.getElementById("collectionTrackSelect");
+const collectionPrevious = document.getElementById("collectionPrevious");
+const collectionNext = document.getElementById("collectionNext");
+const albumModeRow = document.getElementById("albumModeRow");
+const albumModeSelect = document.getElementById("albumModeSelect");
 const refreshMediaBtn = document.getElementById("refreshMediaBtn");
 const mediaList = document.getElementById("mediaList");
 const mediaStatus = document.getElementById("mediaStatus");
 const roomMediaTypeFilter = document.getElementById("roomMediaTypeFilter");
 const importForm = document.getElementById("importForm");
-const videoFileInput = document.getElementById("videoFileInput");
-const importTypeSelect = document.getElementById("importTypeSelect");
-const coverFileInput = document.getElementById("coverFileInput");
-const importSubmitBtn = importForm ? importForm.querySelector("button[type='submit']") : null;
 const importProgressWrap = document.getElementById("importProgressWrap");
 const importProgressBar = document.getElementById("importProgressBar");
 const importProgressText = document.getElementById("importProgressText");
@@ -89,10 +87,8 @@ const chatInput = document.getElementById("chatInput");
 let chatModule = null;
 let loadRooms = async () => [];
 let tryRestoreRoom = async () => {};
-let importInFlight = false;
 let guestAuthOpen = false;
 let importProcessingTimer = null;
-let selectedImportFileStamp = "";
 const DEBUG_SYNC = true;
 
 function syncDebug(event, fields = {}) {
@@ -103,7 +99,7 @@ function syncDebug(event, fields = {}) {
     roomId: state.roomId,
     user: state.me?.username || "guest",
     mode: state.playMode,
-    audioAlbumMode: state.audioAlbumMode,
+    albumMode: state.albumMode,
     activeMediaId: state.activeMediaId,
     activeMediaUrl: toMediaPath(state.activeMediaUrl) || state.activeMediaUrl || "",
     ...fields,
@@ -178,22 +174,11 @@ function estimateServerProcessingSeconds(file) {
   const sizeMb = Math.max(1, Math.round((Number(file?.size || 0) / 1024 / 1024)));
   const mime = String(file?.type || "").toLowerCase();
   const name = String(file?.name || "").toLowerCase();
-  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/.test(name);
+  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg|flac)$/.test(name);
   if (isAudio) {
     return Math.max(10, Math.min(240, Math.round(sizeMb * 0.35 + 8)));
   }
   return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
-}
-
-function importFileStamp(file) {
-  if (!file) return "";
-  return `${file.name}::${file.size}::${file.lastModified}`;
-}
-
-function expectedStageFromProfile(profile = {}, transcoded = false) {
-  const hasVideo = String(profile.videoCodec || "none") !== "none";
-  if (!hasVideo) return "Saving";
-  return transcoded ? "Transcoding" : "Saving";
 }
 
 function startImportProcessingTicker(estimatedSeconds = 0) {
@@ -228,12 +213,6 @@ function stopImportProcessingTicker() {
   importProcessingTimer = null;
 }
 
-if (videoFileInput) {
-  videoFileInput.addEventListener("change", () => {
-    const file = videoFileInput.files && videoFileInput.files[0] ? videoFileInput.files[0] : null;
-    selectedImportFileStamp = importFileStamp(file);
-  });
-}
 
 function hideImportProgress() {
   if (!importProgressWrap || !importProgressBar || !importProgressText) return;
@@ -301,7 +280,7 @@ function formatImportError(detail) {
     return "Import failed: invalid type. Choose movie/RJ/ASMR/music/shot.";
   }
   if (lower.includes("only supported video/audio formats")) {
-    return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a.";
+    return "Import failed: unsupported media format. Use mp4/webm/ogg/mov/mp3/aac/wav/m4a/flac.";
   }
   if (lower.includes("file too large")) {
     return "Import failed: file too large (max 1.5GB).";
@@ -409,15 +388,12 @@ function mediaUrlsMatch(left, right) {
   return normalizeUrl(left || "") === normalizeUrl(right || "");
 }
 
-function getPureAudioTracks(item) {
-  if (!item || item.videoUrl || !Array.isArray(item.audioTracks)) {
-    return [];
-  }
-  return item.audioTracks.filter((trackUrl) => !!trackUrl);
+function getCollectionTracks(item, mode = state.playMode) {
+  return collectionTracks(item, mode);
 }
 
-function getTrackIndexForItem(item, url = "", fallbackIndex = null) {
-  const tracks = getPureAudioTracks(item);
+function getTrackIndexForItem(item, url = "", fallbackIndex = null, mode = state.playMode) {
+  const tracks = getCollectionTracks(item, mode);
   if (!tracks.length) {
     return 0;
   }
@@ -433,28 +409,12 @@ function getTrackIndexForItem(item, url = "", fallbackIndex = null) {
 }
 
 function resolveMediaUrlForMode(item, mode, options = {}) {
-  if (!item) return "";
-  if (mode === "audio") {
-    const tracks = getPureAudioTracks(item);
-    if (tracks.length) {
-      return tracks[getTrackIndexForItem(item, "", options.trackIndex ?? 0)] || "";
-    }
-    return item.audioUrl || "";
-  }
-  return item.videoUrl || "";
+  const tracks = getCollectionTracks(item, mode);
+  return tracks[getTrackIndexForItem(item, "", options.trackIndex ?? 0, mode)] || "";
 }
 
 function mediaItemMatchesModeUrl(item, url, mode) {
-  if (!item || !url) {
-    return false;
-  }
-  if (mode === "audio") {
-    if (mediaUrlsMatch(item.audioUrl || "", url)) {
-      return true;
-    }
-    return getPureAudioTracks(item).some((trackUrl) => mediaUrlsMatch(trackUrl, url));
-  }
-  return mediaUrlsMatch(item.videoUrl || "", url);
+  return getCollectionTracks(item, mode).some((trackUrl) => mediaUrlsMatch(trackUrl, url));
 }
 
 function findMediaItemByUrl(url, mode = state.playMode) {
@@ -478,52 +438,29 @@ function getSyncSourceUrl(data, mode) {
   return data.videoUrl || "";
 }
 
-function getTrackLabel(trackUrl, index) {
-  const fallback = `Track ${index + 1}`;
-  const filename = String(trackUrl || "").split("/").pop() || fallback;
-  try {
-    return `${index + 1}. ${decodeURIComponent(filename)}`;
-  } catch {
-    return `${index + 1}. ${filename}`;
-  }
+function getTrackLabel(url, index) {
+  return collectionLabel(url, index, getActiveMediaItem()?.originalNames);
 }
 
-function normalizeAudioAlbumMode(value) {
-  if (value === "next" || value === "repeat") {
-    return value;
-  }
-  return "stop";
-}
-
-function isAudioOnlyItem(item) {
-  if (!item || item.videoUrl) {
-    return false;
-  }
-  return !!(item.audioUrl || getPureAudioTracks(item).length);
+function normalizeAlbumMode(value) {
+  return collectionMode(value);
 }
 
 function isCurrentControllerClient() {
   return state.controllerUserId === null || (state.me && state.controllerUserId === state.me.id);
 }
 
-function renderAudioAlbumModeControl() {
-  if (!audioAlbumModeRow || !audioAlbumModeSelect) {
-    return;
-  }
-  const activeItem = state.playMode === "audio" ? getActiveMediaItem() : null;
-  const shouldShow = state.playMode === "audio" && isAudioOnlyItem(activeItem);
-  audioAlbumModeRow.classList.toggle("hidden", !shouldShow);
-  audioAlbumModeSelect.disabled = !shouldShow;
-  audioAlbumModeSelect.value = normalizeAudioAlbumMode(state.audioAlbumMode);
+function renderAlbumModeControl() {
+  const hasMedia = getCollectionTracks(getActiveMediaItem()).length > 0;
+  albumModeRow.classList.toggle("hidden", !hasMedia);
+  albumModeSelect.disabled = !hasMedia;
+  albumModeSelect.value = normalizeAlbumMode(state.albumMode);
 }
 
-function applyAudioAlbumModeToPlayer() {
-  const activeItem = getActiveMediaItem();
-  const shouldLoopCurrentTrack =
-    state.playMode === "audio" &&
-    isAudioOnlyItem(activeItem) &&
-    normalizeAudioAlbumMode(state.audioAlbumMode) === "repeat";
-  audioPlayer.loop = shouldLoopCurrentTrack;
+function applyAlbumModeToPlayer() {
+  const repeat = getCollectionTracks(getActiveMediaItem()).length > 0 && state.albumMode === "repeat";
+  videoPlayer.loop = state.playMode === "video" && repeat;
+  audioPlayer.loop = state.playMode === "audio" && repeat;
 }
 
 async function waitForMediaReady(player, timeoutMs = 900) {
@@ -544,31 +481,23 @@ async function waitForMediaReady(player, timeoutMs = 900) {
   });
 }
 
-function renderAudioTrackSelector() {
-  if (!audioTrackRow || !audioTrackSelect) {
-    renderAudioAlbumModeControl();
-    return;
-  }
-  const activeItem = state.playMode === "audio" ? getActiveMediaItem() : null;
-  const tracks = getPureAudioTracks(activeItem);
-  const shouldShow = tracks.length > 1;
-  audioTrackRow.classList.toggle("hidden", !shouldShow);
-  audioTrackSelect.disabled = !shouldShow;
-  audioTrackSelect.innerHTML = "";
-  if (!shouldShow) {
-    renderAudioAlbumModeControl();
-    return;
-  }
-  const selectedIndex = getTrackIndexForItem(activeItem, state.activeMediaUrl, state.activeTrackIndex);
-  state.activeTrackIndex = selectedIndex;
-  tracks.forEach((trackUrl, index) => {
+function renderCollectionTrackSelector() {
+  const tracks = getCollectionTracks(getActiveMediaItem());
+  const index = getTrackIndexForItem(getActiveMediaItem(), state.activeMediaUrl, state.activeTrackIndex);
+  state.activeTrackIndex = index;
+  collectionTrackRow.classList.toggle("hidden", tracks.length < 2);
+  collectionTrackSelect.replaceChildren();
+  tracks.forEach((url, position) => {
     const option = document.createElement("option");
-    option.value = String(index);
-    option.textContent = getTrackLabel(trackUrl, index);
-    option.selected = index === selectedIndex;
-    audioTrackSelect.appendChild(option);
+    option.value = String(position);
+    option.textContent = getTrackLabel(url, position);
+    option.selected = position === index;
+    collectionTrackSelect.appendChild(option);
   });
-  renderAudioAlbumModeControl();
+  document.getElementById("collectionTrackLabel").textContent = state.playMode === "video" ? "Episode" : "Track";
+  collectionPrevious.disabled = index <= 0;
+  collectionNext.disabled = index >= tracks.length - 1;
+  renderAlbumModeControl();
 }
 
 function normalizeMediaType(value) {
@@ -608,46 +537,11 @@ function ensureFilterShowsActiveItem(source = "") {
   }
 }
 
-function setPlayMode(mode, { silent = false } = {}) {
-  const nextMode = mode === "audio" ? "audio" : "video";
-  if (state.playMode === nextMode) {
-    return;
-  }
-  const activeItem = getActiveMediaItem();
-  if (nextMode === "video" && activeItem && !activeItem.videoUrl) {
-    setMediaStatus("Current work has no video track.", true);
-    return;
-  }
-  state.playMode = nextMode;
-  roomPanel.classList.toggle("audio-mode", nextMode === "audio");
-  modeVideoBtn.classList.toggle("active", nextMode === "video");
-  modeAudioBtn.classList.toggle("active", nextMode === "audio");
-
-  const fromPlayer = nextMode === "audio" ? videoPlayer : audioPlayer;
-  const toPlayer = getActivePlayer();
-  const wasPlaying = !fromPlayer.paused;
-  const fromTime = Number(fromPlayer.currentTime || 0);
-  const targetUrl = resolveMediaUrlForMode(activeItem, nextMode, { trackIndex: state.activeTrackIndex });
-  if (targetUrl && normalizeUrl(toPlayer.currentSrc || toPlayer.src) !== normalizeUrl(targetUrl)) {
-    toPlayer.src = targetUrl;
-    state.activeMediaUrl = targetUrl;
-    state.lastSyncedMediaPath = toMediaPath(targetUrl) || state.lastSyncedMediaPath;
-  }
-  if (toPlayer.currentSrc) {
-    toPlayer.currentTime = fromTime;
-  }
-  fromPlayer.pause();
-  applyAudioAlbumModeToPlayer();
-  if (wasPlaying && toPlayer.currentSrc) {
-    toPlayer.play().catch(() => {});
-  }
-  renderMediaLibrary();
-  renderAudioTrackSelector();
-  if (!silent) {
-    state.forceTakeover = true;
-    state.localOverrideUntil = Date.now() + 1200;
-    sendSync();
-  }
+function setMediaKind(mode) {
+  state.playMode = mode === "audio" ? "audio" : "video";
+  roomPanel.classList.toggle("audio-mode", state.playMode === "audio");
+  getInactivePlayer().pause();
+  getInactivePlayer().loop = false;
 }
 
 function renderMediaLibrary() {
@@ -671,11 +565,12 @@ function renderMediaLibrary() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "media-card";
-    const modeUrl = resolveMediaUrlForMode(item, state.playMode, { trackIndex: 0 });
+    const itemMode = item.videoUrl ? "video" : "audio";
+    const modeUrl = resolveMediaUrlForMode(item, itemMode, { trackIndex: 0 });
     const playable = !!modeUrl;
     if (
       (state.activeMediaId && state.activeMediaId === item.id) ||
-      (state.activeMediaUrl && mediaItemMatchesModeUrl(item, state.activeMediaUrl, state.playMode))
+      (state.activeMediaUrl && mediaItemMatchesModeUrl(item, state.activeMediaUrl, itemMode))
     ) {
       btn.classList.add("active");
     }
@@ -707,7 +602,7 @@ function renderMediaLibrary() {
 
     const nameLine = document.createElement("div");
     nameLine.className = "media-name-line";
-    nameLine.textContent = item.name || "Untitled";
+    nameLine.textContent = `${item.name || "Untitled"} · ${itemMode === "video" ? "Video" : "Audio"} · ${getCollectionTracks(item, itemMode).length} item(s)`;
     btn.appendChild(nameLine);
 
     if (!playable) {
@@ -717,25 +612,28 @@ function renderMediaLibrary() {
     btn.onclick = async () => {
       if (!playable) return;
       const requestedTrackIndex =
-        state.playMode === "audio" && state.activeMediaId && state.activeMediaId === item.id
+        getActiveMediaItem() === item
           ? getTrackIndexForItem(item, state.activeMediaUrl, state.activeTrackIndex)
           : 0;
-      const selectedUrl = resolveMediaUrlForMode(item, state.playMode, { trackIndex: requestedTrackIndex });
+      const selectedUrl = resolveMediaUrlForMode(item, itemMode, { trackIndex: requestedTrackIndex });
+      const version = ++state.playbackVersion;
+      state.suppressVideoEvents = true;
+      setMediaKind(itemMode);
       state.forceTakeover = true;
-      state.localOverrideUntil = Date.now() + 1200;
       state.activeMediaId = item.id || null;
-      state.activeTrackIndex = state.playMode === "audio" ? requestedTrackIndex : 0;
+      state.activeTrackIndex = requestedTrackIndex;
       state.activeMediaUrl = selectedUrl;
       state.lastSyncedMediaPath = toMediaPath(selectedUrl) || state.lastSyncedMediaPath;
       const player = getActivePlayer();
       player.src = selectedUrl;
-      applyAudioAlbumModeToPlayer();
+      applyAlbumModeToPlayer();
       player.currentTime = 0;
       await player.play().catch(() => {});
       sendSync();
       renderMediaLibrary();
-      renderAudioTrackSelector();
-      setMediaStatus(`Selected: ${item.name} (${state.playMode} mode)`);
+      renderCollectionTrackSelector();
+      setMediaStatus(`Selected: ${item.name}`);
+      setTimeout(() => { if (version === state.playbackVersion) state.suppressVideoEvents = false; }, 260);
     };
     li.appendChild(btn);
     mediaList.appendChild(li);
@@ -752,8 +650,8 @@ async function loadMediaLibrary() {
   }
   ensureFilterShowsActiveItem();
   renderMediaLibrary();
-  renderAudioTrackSelector();
-  applyAudioAlbumModeToPlayer();
+  renderCollectionTrackSelector();
+  applyAlbumModeToPlayer();
 }
 
 function showTab(which) {
@@ -791,6 +689,7 @@ function setAuthMode(loggedIn) {
     userBadge.textContent = `User: ${state.me.username}`;
     enterLobbyView(false);
     startAuthHealthCheck();
+    importController.refreshTargets().catch(() => {});
   } else {
     stopAuthHealthCheck();
     stopTabLock();
@@ -838,9 +737,8 @@ function enterLobbyView(clearSavedRoom = true) {
   state.activeMediaUrl = "";
   state.activeMediaId = null;
   state.activeTrackIndex = 0;
-  state.audioAlbumMode = "stop";
+  state.albumMode = "stop";
   state.lastSyncedMediaPath = "";
-  state.localOverrideUntil = 0;
   state.localActionCounter = 0;
   state.lastLocalActionId = 0;
   state.lastServerUpdatedAt = 0;
@@ -854,7 +752,7 @@ function enterLobbyView(clearSavedRoom = true) {
   videoPlayer.load();
   audioPlayer.load();
   state.playMode = "audio";
-  setPlayMode("video", { silent: true });
+  setMediaKind("video");
   currentRoomTitle.textContent = "Room";
   if (clearSavedRoom) {
     clearRoomSession();
@@ -963,7 +861,14 @@ function connectWs(roomId) {
   socket.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === "state") {
-      applyRemoteState(data, data.by || "peer");
+      const kind = data.playMode === "audio" ? "audio" : "video";
+      if (data.videoUrl && !findMediaItemByUrl(data.videoUrl, kind)) {
+        state.libraryRefreshPromise ||= loadMediaLibrary().finally(() => { state.libraryRefreshPromise = null; });
+        state.libraryRefreshPromise.then(() => applyRemoteState(data, data.by || "peer"))
+          .catch(() => applyRemoteState(data, data.by || "peer"));
+      } else {
+        applyRemoteState(data, data.by || "peer");
+      }
     } else if (data.type === "members") {
       renderMembers(data);
     } else if (data.type === "pong") {
@@ -984,7 +889,6 @@ function connectWs(roomId) {
         state.roomDisplayNo = null;
         state.controllerUserId = null;
         state.forceTakeover = false;
-        state.localOverrideUntil = 0;
         clearRoomSession();
         setAuthMode(false);
         setMessage("This account was signed in elsewhere. Please login again.", true);
@@ -1065,18 +969,14 @@ function applyRemoteState(data, by) {
     return;
   }
 
-  if (by !== state.me?.username && Date.now() < state.localOverrideUntil) {
-    return;
-  }
-
-  if (state.playMode !== remoteMode) {
-    setPlayMode(remoteMode, { silent: true });
-  }
-
+  const version = ++state.playbackVersion;
   state.suppressVideoEvents = true;
+  if (state.playMode !== remoteMode) {
+    setMediaKind(remoteMode);
+  }
 
-  if (Object.prototype.hasOwnProperty.call(data, "audioAlbumMode")) {
-    state.audioAlbumMode = normalizeAudioAlbumMode(data.audioAlbumMode);
+  if ("albumMode" in data || "audioAlbumMode" in data) {
+    state.albumMode = normalizeAlbumMode(data.albumMode ?? data.audioAlbumMode);
   }
 
   if (Object.prototype.hasOwnProperty.call(data, "controllerUserId")) {
@@ -1101,7 +1001,7 @@ function applyRemoteState(data, by) {
     state.activeMediaId = null;
     state.activeTrackIndex = 0;
     renderMediaLibrary();
-    renderAudioTrackSelector();
+    renderCollectionTrackSelector();
   }
   const currentUrl = normalizeUrl(player.getAttribute("src") || player.currentSrc || "");
   const currentPathKey = canonicalMediaPath(player.getAttribute("src") || player.currentSrc || "");
@@ -1115,7 +1015,7 @@ function applyRemoteState(data, by) {
     sourceChanged = true;
     ensureFilterShowsActiveItem("remote");
     renderMediaLibrary();
-    renderAudioTrackSelector();
+    renderCollectionTrackSelector();
   } else if (incomingUrl) {
     const media = state.activeMediaId != null
       ? state.mediaLibrary.find((item) => item.id === state.activeMediaId) || findMediaItemByUrl(incomingSourceUrl, remoteMode)
@@ -1123,16 +1023,16 @@ function applyRemoteState(data, by) {
     state.activeMediaId = media?.id || null;
     state.activeMediaUrl = incomingSourceUrl;
     state.activeTrackIndex = media ? getTrackIndexForItem(media, incomingSourceUrl, data.trackIndex) : 0;
-    renderAudioTrackSelector();
+    renderCollectionTrackSelector();
   }
-  renderAudioAlbumModeControl();
-  applyAudioAlbumModeToPlayer();
+  renderAlbumModeControl();
+  applyAlbumModeToPlayer();
 
   syncDebug("remote_state_applied", {
     by,
     actionId: data.actionId,
     incomingMode: remoteMode,
-    audioAlbumMode: state.audioAlbumMode,
+    albumMode: state.albumMode,
     incomingVideoUrl: incomingMediaPath,
     trackIndex: data.trackIndex,
     playerCurrentSrc: toMediaPath(player.currentSrc || player.src || "") || "",
@@ -1142,6 +1042,7 @@ function applyRemoteState(data, by) {
   });
 
   const applySeekAndPlayback = () => {
+    if (version !== state.playbackVersion) return;
     const drift = Math.abs((player.currentTime || 0) - desiredTime);
     let jumpedBySeek = false;
     if (drift > 0.35) {
@@ -1154,6 +1055,7 @@ function applyRemoteState(data, by) {
 
     if (desiredPlaying) {
       const ensurePlay = () => {
+        if (version !== state.playbackVersion) return;
         player.play().catch(() => {
           statusBar.textContent = "Playback blocked by browser policy. Click play once to enable sync playback.";
         });
@@ -1171,7 +1073,7 @@ function applyRemoteState(data, by) {
     const controllerText = state.controllerUserId === state.me?.id ? "you" : `user#${state.controllerUserId || "?"}`;
     statusBar.textContent = `Synced by ${by}. t=${desiredTime.toFixed(1)}s, controller: ${controllerText}`;
     setTimeout(() => {
-      state.suppressVideoEvents = false;
+      if (version === state.playbackVersion) state.suppressVideoEvents = false;
     }, 260);
   };
 
@@ -1208,9 +1110,9 @@ function sendSync() {
   const activeItem = getActiveMediaItem();
   const fallbackMediaPath = toMediaPath(resolveMediaUrlForMode(activeItem, state.playMode, { trackIndex: state.activeTrackIndex }));
   const mediaPath =
-    toMediaPath(player.currentSrc) ||
-    toMediaPath(player.src) ||
+    toMediaPath(player.getAttribute("src")) ||
     toMediaPath(state.activeMediaUrl) ||
+    toMediaPath(player.currentSrc) ||
     fallbackMediaPath ||
     state.lastSyncedMediaPath;
   if (!mediaPath) {
@@ -1227,13 +1129,13 @@ function sendSync() {
     actionId,
     forceTakeover: state.forceTakeover,
     playMode: state.playMode,
-    audioAlbumMode: normalizeAudioAlbumMode(state.audioAlbumMode),
+    albumMode: normalizeAlbumMode(state.albumMode),
     videoUrl: mediaPath,
     currentTime: Number(player.currentTime || 0),
     isPlaying: !player.paused,
   };
-  const audioTracks = getPureAudioTracks(activeItem);
-  if (state.playMode === "audio" && audioTracks.length) {
+  const tracks = getCollectionTracks(activeItem);
+  if (tracks.length) {
     payload.trackIndex = getTrackIndexForItem(activeItem, mediaPath, state.activeTrackIndex);
   }
   syncDebug("send_sync", {
@@ -1243,7 +1145,7 @@ function sendSync() {
     payloadVideoUrl: payload.videoUrl,
     payloadTrackIndex: payload.trackIndex,
     payloadMode: payload.playMode,
-    payloadAudioAlbumMode: payload.audioAlbumMode,
+    payloadAlbumMode: payload.albumMode,
     payloadTime: payload.currentTime,
     payloadPlaying: payload.isPlaying,
   });
@@ -1267,11 +1169,8 @@ function onLocalPlaybackAction(event) {
   if (
     event &&
     event.type === "pause" &&
-    event.currentTarget === audioPlayer &&
-    state.playMode === "audio" &&
-    !audioPlayer.loop &&
-    audioPlayer.ended &&
-    isAudioOnlyItem(getActiveMediaItem())
+    event.currentTarget === getActivePlayer() &&
+    event.currentTarget.ended
   ) {
     return;
   }
@@ -1285,80 +1184,38 @@ function onLocalPlaybackAction(event) {
   if (state.me) {
     state.controllerUserId = state.me.id;
   }
-  state.localOverrideUntil = Date.now() + 450;
   scheduleSync();
 }
 
 tabLogin.onclick = () => showTab("login");
 tabRegister.onclick = () => showTab("register");
 
-importForm.onsubmit = async (e) => {
-  e.preventDefault();
-  if (importInFlight) {
-    setMediaStatus("Upload in progress, please wait...", true);
-    setLobbyStatus("Upload in progress, please wait...", true);
-    return;
-  }
-  if (!videoFileInput.files || !videoFileInput.files[0]) {
-    setMediaStatus("Choose a local media file first.", true);
-    setLobbyStatus("Choose a local media file first.", true);
-    return;
-  }
-  if (!importTypeSelect.value) {
-    setMediaStatus("Choose media type first.", true);
-    setLobbyStatus("Choose media type first.", true);
-    return;
-  }
-  try {
-    importInFlight = true;
-    if (importSubmitBtn) importSubmitBtn.disabled = true;
+const importController = createImportForm({
+  form: importForm, api, endpoint: "/api/import", targetsPath: "/api/media/append-targets",
+  upload: xhrUpload, estimateSeconds: estimateServerProcessingSeconds,
+  onStart: () => {
     hideImportProgress();
     setImportProgress(0, "Preparing upload...");
-    setMediaStatus("Importing media into library...");
-    setLobbyStatus("Importing media into library...");
-    const fd = new FormData();
-    const selectedFile = videoFileInput.files[0];
-    const currentStamp = importFileStamp(selectedFile);
-    if (selectedImportFileStamp && currentStamp !== selectedImportFileStamp) {
-      setMediaStatus("Selected file changed during upload preparation. Please submit again.", true);
-      setLobbyStatus("Selected file changed during upload preparation. Please submit again.", true);
-      return;
-    }
-    const estimatedSeconds = estimateServerProcessingSeconds(selectedFile);
-    fd.append("file", selectedFile);
-    fd.append("media_type", importTypeSelect.value);
-    if (coverFileInput.files && coverFileInput.files[0]) {
-      fd.append("cover", coverFileInput.files[0]);
-    }
-    const upload = await xhrUpload("/api/upload-video", fd, () => {
-      startImportProcessingTicker(estimatedSeconds);
-      setMediaStatus(`Upload finished. Server is processing/transcoding media (~${estimatedSeconds}s estimate), please wait...`);
-      setLobbyStatus(`Upload finished. Server is processing/transcoding media (~${estimatedSeconds}s estimate), please wait...`);
-    });
+    setLobbyStatus("Importing collection...");
+  },
+  onProcessing: (seconds) => {
+    startImportProcessingTicker(seconds);
+    setLobbyStatus("Upload complete. Processing media, please wait...");
+  },
+  onSuccess: async (result) => {
     stopImportProcessingTicker();
-    const profile = upload.profile || {};
-    const expectedStage = expectedStageFromProfile(profile, !!upload.transcoded);
-    setImportProgress(100, `Server processing complete (${expectedStage}). Finalizing...`);
-    videoFileInput.value = "";
-    coverFileInput.value = "";
-    const modeText = upload.videoUrl ? "video/audio" : "audio-only";
-    const transcodeText = upload.transcoded ? "transcoded" : "direct import";
-    setMediaStatus(
-      `Imported (${modeText}, ${profile.container || "unknown"}/${profile.videoCodec || "none"}/${profile.audioCodec || "none"}, ${transcodeText}).`,
-    );
-    setLobbyStatus("Import complete. You can now join a room and play it.");
+    setImportProgress(100, "Import complete.");
+    setLobbyStatus(importResultMessage(result));
+    setMediaStatus(importResultMessage(result));
     await loadMediaLibrary();
     setTimeout(hideImportProgress, 1200);
-  } catch (err) {
+  },
+  onError: (error) => {
     hideImportProgress();
-    const msg = formatImportError(err?.message);
-    setMediaStatus(msg, true);
-    setLobbyStatus(msg, true);
-  } finally {
-    importInFlight = false;
-    if (importSubmitBtn) importSubmitBtn.disabled = false;
-  }
-};
+    setLobbyStatus(formatImportError(error?.message), true);
+    setMediaStatus(formatImportError(error?.message), true);
+  },
+});
 
 refreshMediaBtn.onclick = async () => {
   try {
@@ -1370,180 +1227,66 @@ refreshMediaBtn.onclick = async () => {
   }
 };
 
-modeVideoBtn.onclick = () => {
-  setPlayMode("video");
-  setMediaStatus("Switched to video mode.");
+async function switchCollectionTrack(index, { autoPlay = null } = {}) {
+  const item = getActiveMediaItem();
+  const tracks = getCollectionTracks(item);
+  if (!Number.isInteger(index) || index < 0 || index >= tracks.length) return;
+  const player = getActivePlayer();
+  const nextUrl = tracks[index];
+  const shouldPlay = autoPlay ?? !player.paused;
+  const version = ++state.playbackVersion;
+  state.suppressVideoEvents = true;
+  state.forceTakeover = true;
+  state.controllerUserId = state.me?.id ?? null;
+  state.activeTrackIndex = index;
+  state.activeMediaUrl = nextUrl;
+  state.lastSyncedMediaPath = toMediaPath(nextUrl);
+  player.src = nextUrl;
+  applyAlbumModeToPlayer();
+  renderCollectionTrackSelector();
+  await waitForMediaReady(player);
+  if (version !== state.playbackVersion || player !== getActivePlayer() || !mediaUrlsMatch(player.getAttribute("src"), nextUrl)) return;
+  player.currentTime = 0;
+  if (shouldPlay) await player.play().catch(() => {});
+  else player.pause();
+  sendSync();
+  setTimeout(() => { if (version === state.playbackVersion) state.suppressVideoEvents = false; }, 260);
+}
+
+collectionTrackSelect.onchange = () => switchCollectionTrack(Number(collectionTrackSelect.value));
+collectionPrevious.onclick = () => switchCollectionTrack(state.activeTrackIndex - 1);
+collectionNext.onclick = () => switchCollectionTrack(state.activeTrackIndex + 1);
+albumModeSelect.onchange = () => {
+  state.albumMode = normalizeAlbumMode(albumModeSelect.value);
+  applyAlbumModeToPlayer();
+  state.forceTakeover = true;
+  state.controllerUserId = state.me?.id ?? null;
+  sendSync();
 };
 
-modeAudioBtn.onclick = () => {
-  if (state.activeMediaId) {
-    const item = state.mediaLibrary.find((it) => it.id === state.activeMediaId);
-    if (item && !item.audioUrl) {
-      setMediaStatus("Current media has no audio track.", true);
-      return;
-    }
+for (const player of [videoPlayer, audioPlayer]) {
+  for (const event of ["play", "pause", "seeked", "ratechange"]) {
+    player.addEventListener(event, onLocalPlaybackAction);
   }
-  setPlayMode("audio");
-  setMediaStatus("Switched to audio mode.");
-};
-
-if (audioTrackSelect) {
-  audioTrackSelect.onchange = async () => {
-    if (state.playMode !== "audio") {
-      return;
-    }
-    const activeItem = getActiveMediaItem();
-    const tracks = getPureAudioTracks(activeItem);
-    if (tracks.length < 2) {
-      return;
-    }
-    const requestedIndex = Number(audioTrackSelect.value || 0);
-    const nextIndex = getTrackIndexForItem(activeItem, tracks[requestedIndex] || "", requestedIndex);
-    const nextUrl = tracks[nextIndex] || "";
-    if (!nextUrl || mediaUrlsMatch(nextUrl, state.activeMediaUrl)) {
-      renderAudioTrackSelector();
-      return;
-    }
-    const player = audioPlayer;
-    const wasPlaying = !player.paused;
-    state.forceTakeover = true;
-    if (state.me) {
-      state.controllerUserId = state.me.id;
-    }
-    state.localOverrideUntil = Date.now() + 1200;
-    state.activeMediaId = activeItem?.id || null;
-    state.activeTrackIndex = nextIndex;
-    state.activeMediaUrl = nextUrl;
-    state.lastSyncedMediaPath = toMediaPath(nextUrl) || state.lastSyncedMediaPath;
-    player.src = nextUrl;
-    applyAudioAlbumModeToPlayer();
-    try {
-      player.currentTime = 0;
-    } catch {
-    }
-    renderMediaLibrary();
-    renderAudioTrackSelector();
-    if (wasPlaying) {
-      await waitForMediaReady(player);
-      await player.play().catch(() => {});
+  player.addEventListener("timeupdate", () => {
+    if (player === getActivePlayer() && !player.paused) scheduleSync();
+  });
+  player.addEventListener("ended", async () => {
+    if (player !== getActivePlayer() || state.suppressVideoEvents || !isCurrentControllerClient()) return;
+    const tracks = getCollectionTracks(getActiveMediaItem());
+    const index = getTrackIndexForItem(getActiveMediaItem(), state.activeMediaUrl, state.activeTrackIndex);
+    const mode = normalizeAlbumMode(state.albumMode);
+    if (mode === "repeat") {
+      await switchCollectionTrack(index, { autoPlay: true });
+    } else if (mode === "next" && index < tracks.length - 1) {
+      await switchCollectionTrack(index + 1, { autoPlay: true });
     } else {
       player.pause();
-    }
-    sendSync();
-    setMediaStatus(`Selected ${getTrackLabel(nextUrl, nextIndex)}.`);
-  };
-}
-
-if (audioAlbumModeSelect) {
-  audioAlbumModeSelect.onchange = () => {
-    const nextMode = normalizeAudioAlbumMode(audioAlbumModeSelect.value);
-    state.audioAlbumMode = nextMode;
-    renderAudioAlbumModeControl();
-    applyAudioAlbumModeToPlayer();
-    state.forceTakeover = true;
-    if (state.me) {
-      state.controllerUserId = state.me.id;
-    }
-    state.localOverrideUntil = Date.now() + 1200;
-    sendSync();
-    setMediaStatus(`Audio album mode set to ${nextMode}.`);
-  };
-}
-
-["play", "pause", "seeked", "ratechange"].forEach((evt) => {
-  videoPlayer.addEventListener(evt, onLocalPlaybackAction);
-  audioPlayer.addEventListener(evt, onLocalPlaybackAction);
-});
-
-videoPlayer.addEventListener("timeupdate", () => {
-  if (state.playMode !== "video") return;
-  if (!videoPlayer.paused) scheduleSync();
-});
-
-audioPlayer.addEventListener("timeupdate", () => {
-  if (state.playMode !== "audio") return;
-  if (!audioPlayer.paused) scheduleSync();
-});
-
-audioPlayer.addEventListener("ended", async () => {
-  if (state.playMode !== "audio" || state.suppressVideoEvents) {
-    return;
-  }
-  const activeItem = getActiveMediaItem();
-  if (!isAudioOnlyItem(activeItem)) {
-    return;
-  }
-  const albumMode = normalizeAudioAlbumMode(state.audioAlbumMode);
-  if (!isCurrentControllerClient()) {
-    return;
-  }
-  if (albumMode === "repeat") {
-    state.forceTakeover = true;
-    if (state.me) {
-      state.controllerUserId = state.me.id;
-    }
-    state.localOverrideUntil = Date.now() + 1200;
-    state.activeMediaId = activeItem?.id || null;
-    state.activeTrackIndex = getTrackIndexForItem(
-      activeItem,
-      state.activeMediaUrl || audioPlayer.currentSrc || audioPlayer.src,
-      state.activeTrackIndex,
-    );
-    try {
-      audioPlayer.currentTime = 0;
-    } catch {
-    }
-    applyAudioAlbumModeToPlayer();
-    await audioPlayer.play().catch(() => {});
-    sendSync();
-    setMediaStatus("Repeating current track.");
-    return;
-  }
-  const tracks = getPureAudioTracks(activeItem);
-  const currentIndex = getTrackIndexForItem(
-    activeItem,
-    state.activeMediaUrl || audioPlayer.currentSrc || audioPlayer.src,
-    state.activeTrackIndex,
-  );
-  state.forceTakeover = true;
-  if (state.me) {
-    state.controllerUserId = state.me.id;
-  }
-  state.localOverrideUntil = Date.now() + 1200;
-  state.activeMediaId = activeItem?.id || null;
-  state.activeTrackIndex = currentIndex;
-  state.activeMediaUrl = audioPlayer.currentSrc || audioPlayer.src || state.activeMediaUrl;
-  state.lastSyncedMediaPath =
-    toMediaPath(audioPlayer.currentSrc || audioPlayer.src || state.activeMediaUrl) || state.lastSyncedMediaPath;
-
-  if (albumMode === "next" && tracks.length && currentIndex < tracks.length - 1) {
-    const nextIndex = currentIndex + 1;
-    const nextUrl = tracks[nextIndex] || "";
-    if (nextUrl) {
-      state.activeTrackIndex = nextIndex;
-      state.activeMediaUrl = nextUrl;
-      state.lastSyncedMediaPath = toMediaPath(nextUrl) || state.lastSyncedMediaPath;
-      audioPlayer.src = nextUrl;
-      applyAudioAlbumModeToPlayer();
-      try {
-        audioPlayer.currentTime = 0;
-      } catch {
-      }
-      renderAudioTrackSelector();
-      await waitForMediaReady(audioPlayer);
-      await audioPlayer.play().catch(() => {});
       sendSync();
-      setMediaStatus(`Advanced to ${getTrackLabel(nextUrl, nextIndex)}.`);
-      return;
+      setMediaStatus(mode === "next" ? "Reached the end of the collection." : "Stopped after the current item.");
     }
-  }
-
-  audioPlayer.pause();
-  renderAudioTrackSelector();
-  applyAudioAlbumModeToPlayer();
-  sendSync();
-  setMediaStatus(albumMode === "next" ? "Reached the end of the album." : "Stopped after the current track.");
-});
+  });
+}
 
 const lobbyModule = createLobbyModule({
   state,

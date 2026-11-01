@@ -19,12 +19,15 @@ LOG_DEBUG_DIR = BASE_DIR / "log" / "debug"
 SYNC_LOG_FILE = LOG_DEBUG_DIR / "sync.log"
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".webm", ".ogg", ".mov"}
-ALLOWED_AUDIO_EXTENSIONS = {".m4a", ".mp3", ".ogg", ".wav", ".aac"}
+ALLOWED_AUDIO_EXTENSIONS = {".m4a", ".mp3", ".ogg", ".wav", ".aac", ".flac"}
 
 # 管理员账号支持环境变量覆盖，方便部署时自定义。
 ADMIN_USERNAME = os.getenv("WATCH_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("WATCH_ADMIN_PASSWORD", "admin123")
 ADMIN_SESSION_TTL = timedelta(hours=12)
+IMPORT_MAX_FILES = 30
+# 兼容历史名称；用户和管理员使用同一个批量上限。
+ADMIN_APPEND_IMPORT_MAX_FILES = IMPORT_MAX_FILES
 
 SYNC_DEBUG_ENABLED = os.getenv("WATCH_SYNC_DEBUG", "1").strip().lower() not in {
     "0",

@@ -1,0 +1,183 @@
+"""Optional browser regression: pip install -r requirements-dev.txt; playwright install chromium."""
+import io
+import json
+import os
+from pathlib import Path
+import unittest
+import wave
+
+import test_collections as integration
+
+try:
+    from playwright.sync_api import sync_playwright, expect
+except ImportError:
+    sync_playwright = None
+
+
+@unittest.skipUnless(sync_playwright, "Install requirements-dev.txt for browser checks")
+class CollectionBrowserTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.playwright = sync_playwright().start()
+        cls.addClassCleanup(cls.playwright.stop)
+        options = {"headless": True, "args": ["--autoplay-policy=no-user-gesture-required"]}
+        edge = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+        if os.name == "nt" and edge.exists():
+            options["executable_path"] = str(edge)
+        try:
+            cls.browser = cls.playwright.chromium.launch(**options)
+        except Exception as error:
+            raise unittest.SkipTest(f"Install a Playwright Chromium browser: {error}")
+        cls.addClassCleanup(cls.browser.close)
+        cls.fixture = integration.CollectionIntegrationTests
+        cls.fixture.setUpClass()
+        cls.addClassCleanup(cls.fixture.doClassCleanups)
+
+    def page(self, token, admin=False, room=None):
+        context = self.browser.new_context(viewport={"width": 1440, "height": 1000})
+        self.addCleanup(context.close)
+        key = "wt_admin_token" if admin else "wt_token"
+        script = f"sessionStorage.setItem({json.dumps(key)}, {json.dumps(token)});"
+        if room:
+            script += "sessionStorage.setItem('wt_active_room', " + json.dumps(json.dumps(room)) + ");"
+        context.add_init_script(script)
+        page = context.new_page()
+        page.on("pageerror", lambda error: self.errors.append(str(error)))
+        page.goto(self.fixture.origin + ("/admin" if admin else "/"))
+        return page
+
+    @staticmethod
+    def media_file(name, content, mime):
+        return {"name": name, "buffer": content, "mimeType": mime}
+
+    def upload(self, page, admin=False):
+        endpoint = "/api/admin/import" if admin else "/api/import"
+        with page.expect_response(lambda response: response.url.endswith(endpoint) and response.request.method == "POST", timeout=45000) as uploaded:
+            page.locator("#importForm button[type=submit]").click()
+        self.assertEqual(uploaded.value.status, 200, uploaded.value.text())
+        return uploaded.value.json()
+
+    def test_upload_and_two_user_video_audio_collection_playback(self):
+        self.errors = []
+        f = self.fixture
+        owner = self.page(f.owner)
+        expect(owner.locator("#appPanel")).to_be_visible()
+        owner.locator("#videoFileInput").set_input_files([
+            self.media_file("Episode 10.mp4", f.video, "video/mp4"),
+            self.media_file("Episode 2.mp4", f.video, "video/mp4"),
+        ])
+        owner.locator("#importTypeSelect").select_option("movie")
+        expect(owner.locator("#userWorkName")).to_be_visible()
+        owner.locator("#userWorkName").fill("UI Videos")
+        self.assertEqual(self.upload(owner)["mediaKind"], "video")
+        expect(owner.locator("#importForm button[type=submit]")).to_be_enabled()
+
+        admin = self.page(f.admin, admin=True)
+        expect(admin.locator("#dashboard")).to_be_visible()
+        admin.locator("button[data-tab=media]").click()
+        wav = io.BytesIO()
+        with wave.open(wav, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(8000)
+            audio.writeframes(b"\x00\x00" * 32000)
+        admin.locator("#importFile").set_input_files([
+            self.media_file("Track 1.wav", wav.getvalue(), "audio/wav"),
+            self.media_file("Track 2.wav", wav.getvalue(), "audio/wav"),
+        ])
+        admin.locator("#importType").select_option("music")
+        admin.locator("#adminWorkName").fill("UI Audio")
+        self.assertEqual(self.upload(admin, admin=True)["mediaKind"], "audio")
+
+        # Both actual forms append to the same video work with the same request model.
+        for page, is_admin, mode_id, target_id, file_id, filename in (
+            (owner, False, "userImportMode", "userAppendTarget", "videoFileInput", "Episode 3.mp4"),
+            (admin, True, "importMode", "appendTargetWork", "importFile", "Episode 4.mp4"),
+        ):
+            expect(page.locator("#importForm button[type=submit]")).to_be_enabled()
+            page.locator("#" + mode_id).select_option("append")
+            page.wait_for_function("id => [...document.getElementById(id).options].some(o => o.value === 'UI Videos')", arg=target_id)
+            page.locator("#" + target_id).select_option("UI Videos")
+            page.locator("#" + file_id).set_input_files(self.media_file(filename, f.video, "video/mp4"))
+            self.assertTrue(self.upload(page, admin=is_admin)["appendMode"])
+
+        room = f.request("/api/rooms", payload={"name": "Browser collection", "password": f.password}, token=f.owner)[1]
+        f.request(f"/api/rooms/{room['id']}/join", payload={"password": f.password}, token=f.peer)
+        saved = {"roomId": room["id"], "roomName": room["name"], "roomPassword": f.password, "displayNo": 0}
+        owner.evaluate("saved => sessionStorage.setItem('wt_active_room', JSON.stringify(saved))", saved)
+        owner.reload()
+        peer = self.page(f.peer, room=saved)
+        for page in (owner, peer):
+            expect(page.locator("#roomPanel")).to_be_visible()
+            expect(page.locator("#onlineCount")).to_contain_text("2", timeout=10000)
+            self.assertEqual(page.locator("#modeSwitch").count(), 0)
+
+        owner.locator(".media-card").filter(has_text="UI Videos").click()
+        for page in (owner, peer):
+            expect(page.locator("#videoPlayer")).to_be_visible()
+            page.wait_for_function("document.getElementById('videoPlayer').readyState >= 2")
+            expect(page.locator("#collectionTrackSelect option")).to_have_count(4)
+        owner.evaluate("document.getElementById('videoPlayer').pause()")
+        peer.wait_for_function("document.getElementById('videoPlayer').paused")
+        owner.locator("#collectionTrackSelect").select_option("1")
+        for page in (owner, peer):
+            expect(page.locator("#collectionTrackSelect")).to_have_value("1")
+            page.wait_for_function("document.getElementById('videoPlayer').src.includes('Episode%203.mp4')")
+        owner.locator("#collectionPrevious").click()
+        expect(peer.locator("#collectionTrackSelect")).to_have_value("0")
+        owner.locator("#collectionNext").click()
+        expect(peer.locator("#collectionTrackSelect")).to_have_value("1")
+
+        owner.locator("#albumModeSelect").select_option("next")
+        expect(peer.locator("#albumModeSelect")).to_have_value("next")
+        owner.evaluate("async () => { const p=document.getElementById('videoPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
+        expect(owner.locator("#collectionTrackSelect")).to_have_value("2", timeout=12000)
+        expect(peer.locator("#collectionTrackSelect")).to_have_value("2", timeout=12000)
+
+        owner.locator("#albumModeSelect").select_option("repeat")
+        expect(peer.locator("#albumModeSelect")).to_have_value("repeat")
+        owner.evaluate("async () => { const p=document.getElementById('videoPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
+        owner.wait_for_function("document.getElementById('videoPlayer').currentTime < 1.5")
+        expect(owner.locator("#collectionTrackSelect")).to_have_value("2")
+        expect(peer.locator("#collectionTrackSelect")).to_have_value("2")
+
+        owner.locator("#albumModeSelect").select_option("stop")
+        expect(peer.locator("#albumModeSelect")).to_have_value("stop")
+        owner.evaluate("async () => { const p=document.getElementById('videoPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
+        owner.wait_for_function("document.getElementById('videoPlayer').ended")
+        peer.wait_for_function("document.getElementById('videoPlayer').paused")
+        expect(owner.locator("#collectionTrackSelect")).to_have_value("2")
+
+        # A paused peer can take over immediately, including during the previous local action window.
+        peer.locator("#collectionTrackSelect").select_option("0")
+        expect(owner.locator("#collectionTrackSelect")).to_have_value("0")
+
+        screenshot_dir = os.getenv("WATCH_TEST_SCREENSHOTS")
+        if screenshot_dir:
+            target = Path(screenshot_dir)
+            target.mkdir(parents=True, exist_ok=True)
+            owner.screenshot(path=str(target / "video-collection-desktop.png"), full_page=True)
+            owner.set_viewport_size({"width": 390, "height": 844})
+            owner.screenshot(path=str(target / "video-collection-mobile.png"), full_page=True)
+            self.assertTrue(owner.evaluate("document.documentElement.scrollWidth <= innerWidth + 2"),
+                owner.evaluate("[...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().right > innerWidth + 2).map(e => ({tag:e.tagName,id:e.id,cls:e.className,width:e.getBoundingClientRect().width})).slice(0,15)"))
+            owner.set_viewport_size({"width": 1440, "height": 1000})
+
+        owner.locator("#roomMediaTypeFilter").select_option("all")
+        owner.locator(".media-card").filter(has_text="UI Audio").click()
+        for page in (owner, peer):
+            expect(page.locator("#audioPlayer")).to_be_visible()
+            expect(page.locator("#videoPlayer")).not_to_be_visible()
+            expect(page.locator("#collectionTrackSelect option")).to_have_count(2)
+            expect(page.locator("#collectionTrackSelect option").first).to_contain_text("Track 1.wav")
+        owner.locator("#albumModeSelect").select_option("next")
+        expect(peer.locator("#albumModeSelect")).to_have_value("next")
+        owner.wait_for_function("document.getElementById('audioPlayer').readyState >= 2")
+        owner.evaluate("async () => { const p=document.getElementById('audioPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
+        expect(owner.locator("#collectionTrackSelect")).to_have_value("1", timeout=12000)
+        expect(peer.locator("#collectionTrackSelect")).to_have_value("1", timeout=12000)
+        self.assertEqual(self.errors, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

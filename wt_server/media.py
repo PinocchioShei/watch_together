@@ -1,21 +1,26 @@
 """媒体扫描、索引与导入转码逻辑。"""
 
 import asyncio
+from contextlib import asynccontextmanager
+import errno
 import json
+import os
 import re
 import secrets
 import shutil
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from fastapi import HTTPException, UploadFile
 
 from .config import (
     BASE_DIR,
+    IMPORT_MAX_FILES,
     ALLOWED_AUDIO_EXTENSIONS,
     ALLOWED_VIDEO_EXTENSIONS,
     MEDIA_AUDIO_DIR,
@@ -29,6 +34,52 @@ from .utils import dt_to_str, now_utc
 
 MEDIA_WORK_SUBDIR = MEDIA_WORK_DIR / "work"
 MEDIA_TYPE_OPTIONS = {"movie", "RJ", "ASMR", "music", "shot"}
+_IMPORT_LOCK = asyncio.Lock()
+
+
+def validate_work_key(name: str) -> str:
+    """Keep user names verbatim; reject unsafe names instead of silently renaming."""
+    if (not name or name in {".", ".."} or name != name.strip(" .")
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+            or re.fullmatch(r"(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", name)):
+        raise HTTPException(status_code=422, detail="Invalid work or media filename")
+    return name
+
+
+@asynccontextmanager
+async def _import_lock():
+    # Both legacy server ports write the same media tree. Lock publication across processes too.
+    async with _IMPORT_LOCK:
+        with (MEDIA_TMP_DIR / ".import.lock").open("a+b") as lock:
+            if lock.seek(0, 2) == 0:
+                lock.write(b"0")
+                lock.flush()
+            acquired = False
+            try:
+                while not acquired:
+                    lock.seek(0)
+                    try:
+                        if os.name == "nt":
+                            import msvcrt
+                            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                    except OSError as error:
+                        if error.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                            raise
+                        await asyncio.sleep(0.1)
+                yield
+            finally:
+                if acquired:
+                    lock.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def sanitize_filename_stem(name: str) -> str:
@@ -42,7 +93,12 @@ def sanitize_filename_stem(name: str) -> str:
 
 
 def media_url_from_work(work_key: str, filename: str) -> str:
-    return f"/media/work/{work_key}/{filename}"
+    return f"/media/work/{quote(work_key, safe='')}/{quote(filename, safe='')}"
+
+
+def _natural_name_key(path: Path) -> list[Any]:
+    parts = re.split(r"(\d+)", path.name.casefold())
+    return [int(part) if part.isdigit() else part for part in parts]
 
 
 def _split_media_url(url: str) -> tuple[str, str, str] | None:
@@ -93,6 +149,11 @@ def is_audio_media_url(url: str) -> bool:
     kind, _work_key, filename = split
     if kind == "audio":
         return True
+    if Path(filename).suffix.lower() == ".ogg" and kind == "work":
+        path = MEDIA_WORK_SUBDIR / _work_key / filename
+        if path.is_file():
+            stat = path.stat()
+            return _ambiguous_media_kind(str(path), stat.st_mtime_ns, stat.st_size) == "audio"
     return (
         Path(filename).suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
         and Path(filename).suffix.lower() not in ALLOWED_VIDEO_EXTENSIONS
@@ -122,7 +183,7 @@ def _list_media_files(work_dir: Path, ext_set: set[str]) -> list[Path]:
     files = [
         p for p in work_dir.iterdir() if p.is_file() and p.suffix.lower() in ext_set
     ]
-    return sorted(files, key=lambda p: p.name.lower())
+    return sorted(files, key=_natural_name_key)
 
 
 def _guess_media_type(title: str) -> str:
@@ -165,6 +226,7 @@ def _write_work_meta(
     path = _work_meta_path(work_dir)
     old_meta = _read_work_meta(work_dir)
     payload = {
+        **old_meta,
         "mediaType": media_type,
         "title": title or work_dir.name,
         "updatedAt": dt_to_str(now_utc()),
@@ -176,59 +238,11 @@ def _write_work_meta(
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def _ordered_audio_names_from_meta(work_dir: Path) -> list[str]:
-    meta = _read_work_meta(work_dir)
-    raw = meta.get("audioTrackOrder")
-    if not isinstance(raw, list):
-        return []
-    names: list[str] = []
-    for item in raw:
-        if not isinstance(item, str):
-            continue
-        name = item.strip()
-        if not name or "/" in name or "\\" in name:
-            continue
-        if Path(name).suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
-            continue
-        if name not in names:
-            names.append(name)
-    return names
-
-
 def _list_ordered_audio_files(work_dir: Path) -> list[Path]:
     audio_files = _list_media_files(work_dir, ALLOWED_AUDIO_EXTENSIONS)
     if not audio_files:
         return []
-    by_name = {p.name: p for p in audio_files}
-    ordered_names = _ordered_audio_names_from_meta(work_dir)
-    ordered_files = [by_name[name] for name in ordered_names if name in by_name]
-    remaining = [p for p in audio_files if p.name not in ordered_names]
-    return ordered_files + remaining
-
-
-def _update_audio_track_order(work_dir: Path, ordered_files: list[Path]) -> None:
-    meta = _read_work_meta(work_dir)
-    _write_work_meta(
-        work_dir,
-        (meta.get("mediaType") or _guess_media_type(work_dir.name)),
-        title=(meta.get("title") or work_dir.name),
-        extra={"audioTrackOrder": [p.name for p in ordered_files]},
-    )
-
-
-def _allocate_append_audio_filename(work_dir: Path, original_name: str) -> str:
-    suffix = Path(original_name or "").suffix.lower() or ".m4a"
-    base = sanitize_filename_stem(Path(original_name or "track").stem)
-    candidate = f"{base}{suffix}"
-    existing = {p.name for p in work_dir.iterdir() if p.is_file()}
-    if candidate not in existing:
-        return candidate
-    index = 2
-    while True:
-        candidate = f"{base}_{index}{suffix}"
-        if candidate not in existing:
-            return candidate
-        index += 1
+    return audio_files
 
 
 def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
@@ -264,6 +278,7 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
         old_meta = _read_work_meta(work_dir)
         src = by_work.get(work_key, {})
         payload = {
+            **old_meta,
             "title": src.get("title") or old_meta.get("title") or work_key,
             "mediaType": src.get("mediaType")
             or old_meta.get("mediaType")
@@ -272,6 +287,8 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
             or old_meta.get("updatedAt")
             or dt_to_str(now_utc()),
         }
+        if "audioTrackOrder" in old_meta:
+            payload["audioTrackOrder"] = old_meta["audioTrackOrder"]
         if meta_path.exists():
             if old_meta != payload:
                 meta_path.write_text(
@@ -427,50 +444,71 @@ def normalize_media_url(url: str) -> str:
     return _resolve_work_media(stem, "video") or url
 
 
+@lru_cache(maxsize=512)
+def _ambiguous_media_kind(filename: str, mtime_ns: int, size: int) -> str:
+    # OGG can contain video or audio; suffix alone cannot enforce work homogeneity.
+    profile = extract_media_profile(probe_media(Path(filename)))
+    return "video" if profile["videoCodec"] != "unknown" else "audio"
+
+
+def work_media_files(work_dir: Path) -> tuple[list[Path], list[Path]]:
+    videos, audios = [], []
+    if not work_dir.is_dir():
+        return videos, audios
+    for path in work_dir.iterdir():
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS:
+            continue
+        if suffix in ALLOWED_VIDEO_EXTENSIONS & ALLOWED_AUDIO_EXTENSIONS:
+            stat = path.stat()
+            kind = _ambiguous_media_kind(str(path), stat.st_mtime_ns, stat.st_size)
+        else:
+            kind = "video" if suffix in ALLOWED_VIDEO_EXTENSIONS else "audio"
+        (videos if kind == "video" else audios).append(path)
+    return sorted(videos, key=_natural_name_key), sorted(audios, key=_natural_name_key)
+
+
+def work_media_kind(work_dir: Path) -> str:
+    videos, audios = work_media_files(work_dir)
+    if videos and audios:
+        return "mixed"
+    if videos:
+        return "video"
+    if audios:
+        return "audio"
+    # Historical empty audio albums didn't record their kind.
+    return _read_work_meta(work_dir).get("mediaKind", "audio")
+
+
 def collect_media_files() -> dict[str, dict[str, Any]]:
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
-    files: dict[str, dict[str, Any]] = {}
+    files = {}
     for work_dir in MEDIA_WORK_SUBDIR.iterdir():
         if not work_dir.is_dir():
             continue
-        video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
-        audio_files = _list_ordered_audio_files(work_dir)
-        audio_file = _find_first_media_file(work_dir, ALLOWED_AUDIO_EXTENSIONS, "audio")
-        if not video_file and not audio_files:
+        videos, audios = work_media_files(work_dir)
+        if not videos and not audios:
             continue
-        is_pure_audio_work = not video_file and bool(audio_files)
-        audio_tracks = (
-            [media_url_from_work(work_dir.name, p.name) for p in audio_files]
-            if is_pure_audio_work
-            else []
-        )
-        default_audio_url = (
-            audio_tracks[0]
-            if audio_tracks
-            else (
-                media_url_from_work(work_dir.name, audio_file.name)
-                if audio_file
-                else ""
-            )
-        )
-        stat_candidates = [p for p in work_dir.iterdir() if p.is_file()]
-        if not stat_candidates:
-            continue
-        latest_mtime = max(p.stat().st_mtime for p in stat_candidates)
-        stat_size_target = video_file or (audio_files[0] if audio_files else None)
-        if not stat_size_target:
-            continue
-        assert stat_size_target is not None
-        stat_size = stat_size_target.stat().st_size
+        video_tracks = [media_url_from_work(work_dir.name, p.name) for p in videos]
+        audio_tracks = [media_url_from_work(work_dir.name, p.name) for p in audios]
+        # Retain playback of legacy extracted audio, but never offer mixed works for append.
         files[work_dir.name] = {
-            "videoUrl": media_url_from_work(work_dir.name, video_file.name)
-            if video_file
-            else "",
-            "audioUrl": default_audio_url,
-            "audioTracks": audio_tracks,
+            "workKey": work_dir.name,
+            "mediaKind": "mixed" if videos and audios else ("video" if videos else "audio"),
+            "videoUrl": video_tracks[0] if video_tracks else "",
+            "audioUrl": audio_tracks[0] if audio_tracks else "",
+            "videoTracks": video_tracks,
+            "audioTracks": audio_tracks if not videos else [],
+            "originalNames": {
+                media_url_from_work(work_dir.name, filename): original
+                for filename, original in (_read_work_meta(work_dir).get("originalNames") or {}).items()
+            },
             "coverUrl": _resolve_cover_url(work_dir.name),
-            "size": stat_size,
-            "updatedAt": dt_to_str(datetime.fromtimestamp(latest_mtime, timezone.utc)),
+            "size": sum(p.stat().st_size for p in videos + audios),
+            "updatedAt": dt_to_str(datetime.fromtimestamp(
+                max(p.stat().st_mtime for p in work_dir.iterdir() if p.is_file()), timezone.utc)),
             "meta": _read_work_meta(work_dir),
         }
     return files
@@ -492,6 +530,8 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         work_key = stem_from_media_url(row["video_url"] or row["audio_url"] or "")
         if not work_key:
             continue
+        if work_key in seen_stems:
+            continue
         file_meta = file_index.get(work_key)
         if not file_meta:
             continue
@@ -501,7 +541,7 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "id": row["id"],
                 "name": row["title"] or work_key,
                 "videoUrl": file_meta["videoUrl"],
-                "audioUrl": file_meta["audioUrl"] or row["audio_url"] or "",
+                "audioUrl": file_meta["audioUrl"],
                 "coverUrl": _resolve_cover_url(work_key, row["cover_url"] or ""),
                 "type": (file_meta.get("meta", {}) or {}).get("mediaType")
                 or row["media_type"]
@@ -511,8 +551,8 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "updatedAt": file_meta["updatedAt"],
             }
         )
-        if file_meta.get("audioTracks"):
-            items[-1]["audioTracks"] = file_meta["audioTracks"]
+        items[-1].update({key: file_meta[key] for key in
+                          ("workKey", "mediaKind", "videoTracks", "audioTracks", "originalNames")})
 
     for stem, file_meta in file_index.items():
         if stem in seen_stems:
@@ -531,46 +571,40 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "updatedAt": file_meta["updatedAt"],
             }
         )
-        if file_meta.get("audioTracks"):
-            items[-1]["audioTracks"] = file_meta["audioTracks"]
+        items[-1].update({key: file_meta[key] for key in
+                          ("workKey", "mediaKind", "videoTracks", "audioTracks", "originalNames")})
 
     items.sort(key=lambda item: item["updatedAt"], reverse=True)
     return items
 
 
-def list_appendable_audio_works() -> list[dict[str, Any]]:
+def list_appendable_works() -> list[dict[str, Any]]:
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
-    items: list[dict[str, Any]] = []
+    items = []
     for work_dir in MEDIA_WORK_SUBDIR.iterdir():
         if not work_dir.is_dir():
             continue
-        video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
-        if video_file:
+        kind = work_media_kind(work_dir)
+        if kind not in {"audio", "video"}:
             continue
         meta = _read_work_meta(work_dir)
-        audio_files = _list_ordered_audio_files(work_dir)
-        if not meta and not audio_files:
+        videos, audios = work_media_files(work_dir)
+        if not meta and not videos and not audios:
             continue
-        stat_candidates = [p for p in work_dir.iterdir() if p.is_file()]
-        latest_mtime = (
-            max(p.stat().st_mtime for p in stat_candidates) if stat_candidates else 0
-        )
-        items.append(
-            {
-                "workKey": work_dir.name,
-                "name": meta.get("title") or work_dir.name,
-                "type": meta.get("mediaType") or _guess_media_type(work_dir.name),
-                "trackCount": len(audio_files),
-                "coverUrl": _resolve_cover_url(work_dir.name),
-                "updatedAt": (
-                    dt_to_str(datetime.fromtimestamp(latest_mtime, timezone.utc))
-                    if latest_mtime
-                    else meta.get("updatedAt") or dt_to_str(now_utc())
-                ),
-            }
-        )
-    items.sort(key=lambda item: item["updatedAt"], reverse=True)
-    return items
+        items.append({
+            "workKey": work_dir.name,
+            "name": meta.get("title") or work_dir.name,
+            "type": meta.get("mediaType") or _guess_media_type(work_dir.name),
+            "mediaKind": kind,
+            "trackCount": len(videos if kind == "video" else audios),
+            "coverUrl": _resolve_cover_url(work_dir.name),
+            "updatedAt": meta.get("updatedAt") or dt_to_str(now_utc()),
+        })
+    return sorted(items, key=lambda item: item["updatedAt"], reverse=True)
+
+
+def list_appendable_audio_works() -> list[dict[str, Any]]:
+    return [item for item in list_appendable_works() if item["mediaKind"] == "audio"]
 
 
 def stem_from_media_url(url: str) -> str:
@@ -583,39 +617,22 @@ def stem_from_media_url(url: str) -> str:
     return Path(filename).stem
 
 
-def derive_audio_track_index(url: str) -> int | None:
+def derive_media_track_index(url: str) -> int | None:
     split = _split_media_url(url)
-    if not split:
+    if not split or split[0] != "work":
         return None
+    _, work_key, filename = split
+    videos, audios = work_media_files(MEDIA_WORK_SUBDIR / work_key)
+    tracks = audios if is_audio_media_url(url) else videos
+    return next((index for index, path in enumerate(tracks) if path.name == filename), None)
 
-    kind, work_key, _filename = split
-    if kind != "work" or not work_key:
-        return None
 
-    work_dir = MEDIA_WORK_SUBDIR / work_key
-    if not work_dir.exists() or not work_dir.is_dir():
-        return None
-
-    video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
-    if video_file:
-        return None
-
-    audio_files = _list_ordered_audio_files(work_dir)
-    if not audio_files:
-        return None
-
-    audio_tracks = [media_url_from_work(work_key, p.name) for p in audio_files]
-    normalized_url = unquote(url)
-    normalized_tracks = [unquote(track_url) for track_url in audio_tracks]
-    try:
-        return normalized_tracks.index(normalized_url)
-    except ValueError:
-        return 0
+def derive_audio_track_index(url: str) -> int | None:
+    return derive_media_track_index(url)
 
 
 def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
-    if not re.fullmatch(r"[\w\-\u4e00-\u9fff\s\.]+", stem):
-        raise HTTPException(status_code=400, detail="Invalid media key")
+    validate_work_key(stem)
 
     deleted_files: list[str] = []
     work_dir = MEDIA_WORK_SUBDIR / stem
@@ -656,11 +673,8 @@ def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
 def rename_media_work(
     conn: sqlite3.Connection, old_key: str, new_name: str
 ) -> dict[str, Any]:
-    if not old_key:
-        raise HTTPException(status_code=400, detail="Invalid media key")
-    target_key = sanitize_filename_stem(new_name)
-    if not target_key:
-        raise HTTPException(status_code=400, detail="Invalid target work name")
+    validate_work_key(old_key)
+    target_key = validate_work_key(new_name.strip())
 
     src_dir = MEDIA_WORK_SUBDIR / old_key
     if not src_dir.exists() or not src_dir.is_dir():
@@ -802,434 +816,221 @@ def is_browser_friendly_mp4(
     return True
 
 
-def allocate_media_stem(original_stem: str) -> str:
-    MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
-    base = sanitize_filename_stem(original_stem)
-    existing = {p.name for p in MEDIA_WORK_SUBDIR.iterdir() if p.is_dir()}
-    if base not in existing:
-        return base
-    index = 2
-    while True:
-        candidate = f"{base}_{index}"
-        if candidate not in existing:
-            return candidate
-        index += 1
-
-
-async def import_media_file(
-    file: UploadFile,
-    media_type: str,
-    cover: UploadFile | None = None,
-    import_mode: str = "create",
-    target_work_key: str = "",
-) -> dict[str, Any]:
-    """导入本地视频/音频，输出 work/<title>/video|audio 资源并入库。"""
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in (ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS):
-        raise HTTPException(
-            status_code=400, detail="Only supported video/audio formats are allowed"
-        )
-
-    import_mode = (import_mode or "create").strip().lower()
-    if import_mode not in {"create", "append_audio"}:
-        raise HTTPException(status_code=422, detail="Invalid import mode")
-
-    ensure_ffmpeg_tools()
-    MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
-
-    if import_mode == "append_audio":
-        if cover is not None:
-            raise HTTPException(
-                status_code=422,
-                detail="Append mode does not accept cover uploads",
-            )
-        work_key = sanitize_filename_stem(target_work_key)
-        if not work_key or work_key != (target_work_key or "").strip():
-            raise HTTPException(status_code=422, detail="Invalid append target")
-        work_dir = MEDIA_WORK_SUBDIR / work_key
-        if not work_dir.exists() or not work_dir.is_dir():
-            raise HTTPException(status_code=404, detail="Append target not found")
-
-        video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
-        if video_file:
-            raise HTTPException(
-                status_code=409,
-                detail="Append mode is only available for audio-only works",
-            )
-
-        source_stem = Path(file.filename or "track").stem
-        raw_name = f"raw_append_{work_key}_{secrets.token_hex(4)}{suffix}"
-        raw_path = MEDIA_TMP_DIR / raw_name
-        max_size = int(1.5 * 1024 * 1024 * 1024)
-        size = 0
-        with raw_path.open("wb") as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > max_size:
-                    out.close()
-                    raw_path.unlink(missing_ok=True)
-                    raise HTTPException(
-                        status_code=413, detail="File too large, max 1.5GB"
-                    )
-                out.write(chunk)
-        await file.close()
-
-        probe_result = await asyncio.to_thread(probe_media, raw_path)
-        profile = extract_media_profile(probe_result)
-        try:
-            duration = float((probe_result.get("format") or {}).get("duration") or 0)
-        except (TypeError, ValueError):
-            duration = 0.0
-        streams = probe_result.get("streams") or []
-        has_video = any(
-            s.get("codec_type") == "video"
-            and not bool((s.get("disposition") or {}).get("attached_pic", 0))
-            for s in streams
-        )
-        has_audio = any(s.get("codec_type") == "audio" for s in streams)
-        if has_video or not has_audio:
-            raw_path.unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=400,
-                detail="Append mode only accepts audio-only files",
-            )
-
-        media_type = (media_type or "").strip()
-        existing_meta = _read_work_meta(work_dir)
-        effective_media_type = (
-            existing_meta.get("mediaType") or media_type or _guess_media_type(work_key)
-        )
-        if effective_media_type not in MEDIA_TYPE_OPTIONS:
-            raw_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=422, detail="Invalid media type")
-
-        audio_name = _allocate_append_audio_filename(work_dir, f"{source_stem}.m4a")
-        audio_path = work_dir / audio_name
-        audio_cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(raw_path),
-            "-vn",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            str(audio_path),
-        ]
-        audio_proc = await asyncio.create_subprocess_exec(
-            *audio_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, audio_err = await audio_proc.communicate()
-        raw_path.unlink(missing_ok=True)
-        if audio_proc.returncode != 0:
-            audio_path.unlink(missing_ok=True)
-            detail = audio_err.decode("utf-8", errors="ignore")[-400:]
-            raise HTTPException(
-                status_code=500,
-                detail=f"Audio import failed: {detail or 'unknown error'}",
-            )
-
-        ordered_audio_files = _list_ordered_audio_files(work_dir)
-        if audio_path not in ordered_audio_files:
-            ordered_audio_files.append(audio_path)
-        _update_audio_track_order(work_dir, ordered_audio_files)
-
-        cover_url = _resolve_cover_url(work_key)
-        now_str = dt_to_str(now_utc())
-        title = existing_meta.get("title") or work_key
-        audio_url = media_url_from_work(work_key, ordered_audio_files[0].name)
-        conn = db_conn()
-        try:
-            match = conn.execute(
-                "SELECT id, created_at FROM media_assets WHERE video_url LIKE ? OR audio_url LIKE ? ORDER BY updated_at DESC LIMIT 1",
-                (f"/media/work/{work_key}/%", f"/media/work/{work_key}/%"),
-            ).fetchone()
-            payload = (
-                title,
-                "",
-                audio_url,
-                cover_url,
-                effective_media_type,
-                duration,
-                max(
-                    (p.stat().st_size for p in ordered_audio_files),
-                    default=audio_path.stat().st_size,
-                ),
-                (match["created_at"] if match and match["created_at"] else now_str),
-                now_str,
-            )
-            if match:
-                conn.execute(
-                    """
-                    UPDATE media_assets
-                    SET title = ?, video_url = ?, audio_url = ?, cover_url = ?, media_type = ?, duration = ?, size = ?, created_at = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (*payload, match["id"]),
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    payload,
-                )
-            conn.commit()
-        finally:
-            conn.close()
-
-        return {
-            "ok": True,
-            "videoUrl": "",
-            "audioUrl": audio_url,
-            "coverUrl": cover_url,
-            "type": effective_media_type,
-            "profile": profile,
-            "transcoded": True,
-            "imported": True,
-            "appendMode": True,
-            "targetWorkKey": work_key,
-            "appendedTrackUrl": media_url_from_work(work_key, audio_name),
-        }
-
-    source_stem = Path(file.filename or "media").stem
-    media_stem = allocate_media_stem(source_stem)
-    work_dir = MEDIA_WORK_SUBDIR / media_stem
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    raw_name = f"raw_{media_stem}_{secrets.token_hex(4)}{suffix}"
-    raw_path = MEDIA_TMP_DIR / raw_name
-
-    max_size = int(1.5 * 1024 * 1024 * 1024)
-    size = 0
-    with raw_path.open("wb") as out:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > max_size:
-                out.close()
-                raw_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=413, detail="File too large, max 1.5GB")
-            out.write(chunk)
-    await file.close()
-
-    probe_result = await asyncio.to_thread(probe_media, raw_path)
-    profile = extract_media_profile(probe_result)
-    try:
-        duration = float((probe_result.get("format") or {}).get("duration") or 0)
-    except (TypeError, ValueError):
-        duration = 0.0
-    streams = probe_result.get("streams") or []
-    has_video = any(
-        s.get("codec_type") == "video"
-        and not bool((s.get("disposition") or {}).get("attached_pic", 0))
-        for s in streams
-    )
-    has_audio = any(s.get("codec_type") == "audio" for s in streams)
-
-    video_name = "video.mp4"
-    video_path = work_dir / video_name
-    audio_name = "audio.m4a"
-    audio_path = work_dir / audio_name
-
-    video_url = ""
-    audio_url = ""
-    transcoded = False
-
-    media_type = (media_type or "").strip()
-    if media_type not in MEDIA_TYPE_OPTIONS:
-        raw_path.unlink(missing_ok=True)
-        shutil.rmtree(work_dir, ignore_errors=True)
-        raise HTTPException(status_code=422, detail="Invalid media type")
-
-    if has_video:
-        if is_browser_friendly_mp4(profile, probe_result):
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(raw_path),
-                "-c:v",
-                "copy",
-                "-c:a",
-                "copy" if has_audio else "aac",
-                "-movflags",
-                "+faststart",
-                str(video_path),
-            ]
-        else:
-            transcoded = True
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(raw_path),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-pix_fmt",
-                "yuv420p",
-            ]
-            if has_audio:
-                cmd += ["-c:a", "aac", "-b:a", "128k"]
-            else:
-                cmd += ["-an"]
-            cmd += ["-movflags", "+faststart", str(video_path)]
-
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        _, stderr = await process.communicate()
-        if process.returncode != 0:
-            raw_path.unlink(missing_ok=True)
-            shutil.rmtree(work_dir, ignore_errors=True)
-            detail = stderr.decode("utf-8", errors="ignore")[-400:]
-            raise HTTPException(
-                status_code=500, detail=f"Transcode failed: {detail or 'unknown error'}"
-            )
-
-        video_url = media_url_from_work(media_stem, video_name)
-        if has_audio:
-            audio_cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(video_path),
-                "-vn",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "160k",
-                str(audio_path),
-            ]
-            audio_proc = await asyncio.create_subprocess_exec(
-                *audio_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await audio_proc.communicate()
-            if audio_proc.returncode == 0:
-                audio_url = media_url_from_work(media_stem, audio_name)
-            else:
-                audio_path.unlink(missing_ok=True)
+async def _convert_import_file(raw_path: Path, output_path: Path,
+                               kind: str, probe: dict[str, Any]) -> bool:
+    has_audio = any(s.get("codec_type") == "audio" for s in probe.get("streams", []))
+    video_stream = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"
+                         and not (s.get("disposition") or {}).get("attached_pic")), {})
+    video_map = f"0:{video_stream.get('index', 0)}"
+    copied = kind == "video" and is_browser_friendly_mp4(extract_media_profile(probe), probe)
+    cmd = ["ffmpeg", "-y", "-i", str(raw_path)]
+    if kind == "audio":
+        cmd += ["-vn", "-c:a", "aac", "-b:a", "160k"]
+    elif copied:
+        cmd += ["-map", video_map, "-c:v", "copy"]
+        cmd += ["-map", "0:a:0?", "-c:a", "copy"] if has_audio else ["-an"]
     else:
-        if not has_audio:
-            raw_path.unlink(missing_ok=True)
-            shutil.rmtree(work_dir, ignore_errors=True)
-            raise HTTPException(
-                status_code=400, detail="Uploaded file has no audio or video stream"
-            )
-        transcoded = suffix not in {".m4a", ".aac"}
-        audio_cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(raw_path),
-            "-vn",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            str(audio_path),
-        ]
-        audio_proc = await asyncio.create_subprocess_exec(
-            *audio_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, audio_err = await audio_proc.communicate()
-        if audio_proc.returncode != 0:
-            raw_path.unlink(missing_ok=True)
-            shutil.rmtree(work_dir, ignore_errors=True)
-            detail = audio_err.decode("utf-8", errors="ignore")[-400:]
-            raise HTTPException(
-                status_code=500,
-                detail=f"Audio import failed: {detail or 'unknown error'}",
-            )
-        audio_url = media_url_from_work(media_stem, audio_name)
-
-    raw_path.unlink(missing_ok=True)
-
+        cmd += ["-map", video_map, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+        cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"] if has_audio else ["-an"]
+    cmd += ["-movflags", "+faststart", str(output_path)]
+    process = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
     try:
-        cover_url = (
-            _save_uploaded_cover(work_dir, cover)
-            if cover
-            else _build_cover_for_work(
-                work_dir, video_path if video_path.exists() else None
-            )
-        )
-    except HTTPException:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        _, stderr = await process.communicate()
+    except BaseException:
+        if process.returncode is None:
+            process.kill()
+            await process.communicate()
         raise
+    if process.returncode:
+        detail = stderr.decode("utf-8", errors="replace")[-400:]
+        raise HTTPException(status_code=500, detail=f"Media import failed: {detail}")
+    return not copied
 
-    _write_work_meta(work_dir, media_type, title=media_stem)
 
-    title = media_stem
-    now_str = dt_to_str(now_utc())
+def _persist_import(work_key: str, kind: str, title: str, media_type: str,
+                    duration: float) -> dict[str, Any]:
+    work_dir = MEDIA_WORK_SUBDIR / work_key
+    videos, audios = work_media_files(work_dir)
+    video_tracks = [media_url_from_work(work_key, path.name) for path in videos]
+    audio_tracks = [media_url_from_work(work_key, path.name) for path in audios]
+    now = dt_to_str(now_utc())
+    result = {
+        "workKey": work_key, "mediaKind": kind,
+        "videoUrl": video_tracks[0] if video_tracks else "",
+        "audioUrl": audio_tracks[0] if audio_tracks else "",
+        "videoTracks": video_tracks, "audioTracks": audio_tracks,
+        "coverUrl": _resolve_cover_url(work_key), "type": media_type,
+    }
     conn = db_conn()
     try:
-        match = conn.execute(
-            "SELECT id FROM media_assets WHERE video_url LIKE ? OR audio_url LIKE ? ORDER BY updated_at DESC LIMIT 1",
-            (f"/media/work/{media_stem}/%", f"/media/work/{media_stem}/%"),
-        ).fetchone()
-        payload = (
-            title,
-            video_url,
-            audio_url,
-            cover_url,
-            media_type,
-            duration,
-            (
-                video_path.stat().st_size
-                if video_path.exists()
-                else audio_path.stat().st_size
-            ),
-            now_str,
-            now_str,
-        )
-        if match:
-            conn.execute(
-                """
-                UPDATE media_assets
-                SET title = ?, video_url = ?, audio_url = ?, cover_url = ?, media_type = ?, duration = ?, size = ?, created_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (*payload, match["id"]),
-            )
+        # Compare decoded work keys, not LIKE: encoded names and SQL wildcards are valid filenames.
+        matches = [row for row in conn.execute("SELECT id, video_url, audio_url FROM media_assets").fetchall()
+                   if stem_from_media_url(row["video_url"] or row["audio_url"] or "") == work_key]
+        values = (title, result["videoUrl"], result["audioUrl"], result["coverUrl"],
+                  media_type, duration, sum(p.stat().st_size for p in videos + audios), now)
+        if matches:
+            conn.execute("""UPDATE media_assets SET title=?, video_url=?, audio_url=?, cover_url=?,
+                media_type=?, duration=?, size=?, updated_at=? WHERE id=?""", (*values, matches[0]["id"]))
+            conn.executemany("DELETE FROM media_assets WHERE id=?", [(row["id"],) for row in matches[1:]])
         else:
-            conn.execute(
-                """
-                INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                payload,
-            )
+            conn.execute("""INSERT INTO media_assets(title,video_url,audio_url,cover_url,
+                media_type,duration,size,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)""", (*values, now))
         conn.commit()
     finally:
         conn.close()
+    return result
 
-    return {
-        "ok": True,
-        "videoUrl": video_url,
-        "audioUrl": audio_url,
-        "coverUrl": cover_url,
-        "type": media_type,
-        "profile": profile,
-        "transcoded": transcoded,
-        "imported": True,
-    }
+
+async def import_media_files(files: list[UploadFile], media_type: str = "movie",
+                             cover: UploadFile | None = None, import_mode: str = "create",
+                             target_work_key: str = "", work_name: str = "") -> dict[str, Any]:
+    """Shared user/admin import: validate an entire homogeneous batch, stage, then publish."""
+    staging = None
+    try:
+        mode = (import_mode or "create").strip().lower()
+        if mode not in {"create", "append", "append_audio", "append_video"}:
+            raise HTTPException(status_code=422, detail="Invalid import mode")
+        append = mode != "create"
+        if not files or len(files) > IMPORT_MAX_FILES:
+            raise HTTPException(status_code=422, detail=f"Choose 1 to {IMPORT_MAX_FILES} media files")
+        if append and cover:
+            raise HTTPException(status_code=422, detail="Append mode does not accept cover uploads")
+        if not append and media_type not in MEDIA_TYPE_OPTIONS:
+            raise HTTPException(status_code=422, detail="Invalid media type")
+        ensure_ffmpeg_tools()
+        MEDIA_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
+        staging = MEDIA_TMP_DIR / ("import_" + secrets.token_hex(12))
+        staging.mkdir()
+        prepared = []
+        for index, upload in enumerate(files):
+            suffix = Path(upload.filename or "").suffix.lower()
+            if suffix not in ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS:
+                raise HTTPException(status_code=400, detail="Only supported video/audio formats are allowed")
+            raw_path = staging / f"raw_{index}{suffix}"
+            size = 0
+            with raw_path.open("wb") as output:
+                while chunk := await upload.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > int(1.5 * 1024**3):
+                        raise HTTPException(status_code=413, detail="File too large, max 1.5GB")
+                    output.write(chunk)
+            probe = await asyncio.to_thread(probe_media, raw_path)
+            streams = probe.get("streams") or []
+            has_video = any(s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic") for s in streams)
+            has_audio = any(s.get("codec_type") == "audio" for s in streams)
+            if not has_video and not has_audio:
+                raise HTTPException(status_code=400, detail="Uploaded file has no audio or video stream")
+            prepared.append((upload.filename or "media", raw_path, probe, "video" if has_video else "audio"))
+        kinds = {entry[3] for entry in prepared}
+        if len(kinds) != 1:
+            raise HTTPException(status_code=409, detail="A work cannot mix video and audio files")
+        kind = prepared[0][3]
+        if mode in {"append_audio", "append_video"} and kind != mode.removeprefix("append_"):
+            raise HTTPException(status_code=409, detail="Uploaded media does not match the append mode")
+
+        # Serialize publication/imports in this process so concurrent appends cannot mix kinds or names.
+        async with _import_lock():
+            if append:
+                work_key = target_work_key.strip()
+                validate_work_key(work_key)
+                work_dir = MEDIA_WORK_SUBDIR / work_key
+                if not work_dir.is_dir():
+                    raise HTTPException(status_code=404, detail="Append target not found")
+                existing_kind = work_media_kind(work_dir)
+                if existing_kind == "mixed":
+                    raise HTTPException(status_code=409, detail="Legacy mixed works cannot be appended; create a new work")
+                if existing_kind != kind:
+                    raise HTTPException(status_code=409, detail="A work cannot mix video and audio files")
+            else:
+                if len(prepared) > 1 and not work_name.strip():
+                    raise HTTPException(status_code=422, detail="A collection name is required for multiple files")
+                work_key = validate_work_key(work_name.strip() if len(prepared) > 1 else prepared[0][0])
+                work_dir = MEDIA_WORK_SUBDIR / work_key
+                if work_dir.exists():
+                    raise HTTPException(status_code=409, detail="A work with this name already exists; append to it or choose another collection name")
+            old_meta = _read_work_meta(work_dir) if append else {}
+            effective_type = old_meta.get("mediaType") or media_type or _guess_media_type(work_key)
+            if effective_type not in MEDIA_TYPE_OPTIONS:
+                raise HTTPException(status_code=422, detail="Invalid media type")
+            title = old_meta.get("title") or work_key
+            output_dir = staging / "output" / work_key
+            output_dir.mkdir(parents=True)
+            existing_names = {p.name.casefold() for p in work_dir.iterdir()} if append else set()
+            imported = []
+            durations = dict(old_meta.get("trackDurations") or {})
+            original_names = dict(old_meta.get("originalNames") or {})
+            for original, raw_path, probe, _ in prepared:
+                validate_work_key(original)
+                base = Path(original).stem
+                suffix = ".mp4" if kind == "video" else ".m4a"
+                name = original if Path(original).suffix.lower() == suffix else base + suffix
+                if name.casefold() in existing_names:
+                    raise HTTPException(status_code=409, detail=f"Media filename already exists in this work: {name}")
+                existing_names.add(name.casefold())
+                transcoded = await _convert_import_file(raw_path, output_dir / name, kind, probe)
+                durations[name] = float((probe.get("format") or {}).get("duration") or 0)
+                original_names[name] = original
+                imported.append({"filename": original, "url": media_url_from_work(work_key, name),
+                                 "profile": extract_media_profile(probe), "transcoded": transcoded})
+            if not append or not (work_dir / "cover.jpg").exists():
+                if cover:
+                    await asyncio.to_thread(_save_uploaded_cover, output_dir, cover)
+                else:
+                    first_video = next(output_dir.glob("*.mp4"), None) if kind == "video" else None
+                    await asyncio.to_thread(_build_cover_for_work, output_dir, first_video)
+            (output_dir / ".meta.json").write_text(json.dumps({
+                **old_meta, "mediaKind": kind, "mediaType": effective_type, "title": title,
+                "updatedAt": dt_to_str(now_utc()), "trackDurations": durations,
+                "originalNames": original_names,
+            }, ensure_ascii=False), encoding="utf-8")
+            old_meta_bytes = (work_dir / ".meta.json").read_bytes() if append and (work_dir / ".meta.json").exists() else None
+            published = []
+            published_work = False
+            try:
+                if append:
+                    for path in output_dir.iterdir():
+                        if path.name == ".meta.json":
+                            continue
+                        target = work_dir / path.name
+                        path.replace(target)
+                        published.append(target)
+                    (output_dir / ".meta.json").replace(work_dir / ".meta.json")
+                else:
+                    output_dir.replace(work_dir)
+                    published_work = True
+                result = _persist_import(work_key, kind, title, effective_type, sum(durations.values()))
+            except BaseException:
+                if append:
+                    for path in published:
+                        path.unlink(missing_ok=True)
+                    if old_meta_bytes is None:
+                        (work_dir / ".meta.json").unlink(missing_ok=True)
+                    else:
+                        (work_dir / ".meta.json").write_bytes(old_meta_bytes)
+                elif published_work:
+                    work_dir.replace(output_dir)
+                raise
+            return {
+                **result, "ok": True, "imported": len(imported), "count": len(imported),
+                "failed": 0, "errors": [], "items": imported, "batch": len(imported) > 1,
+                "appendMode": append, "targetWorkKey": work_key,
+                "profile": imported[0]["profile"], "transcoded": any(item["transcoded"] for item in imported),
+                "appendedTrackUrl": imported[-1]["url"] if append else "",
+            }
+    finally:
+        for upload in files:
+            await upload.close()
+        if cover:
+            await cover.close()
+        if staging:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+async def import_media_file(file: UploadFile, media_type: str, cover: UploadFile | None = None,
+                            import_mode: str = "create", target_work_key: str = "") -> dict[str, Any]:
+    return await import_media_files([file], media_type, cover, import_mode, target_work_key)
 
 
 def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
@@ -1282,15 +1083,19 @@ def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
         "SELECT id, title, video_url, audio_url, cover_url, media_type FROM media_assets"
     ).fetchall()
     for row in rows:
-        stem = stem_from_media_url(row["video_url"] or row["audio_url"] or "")
+        source_url = row["video_url"] or row["audio_url"] or ""
+        stem = stem_from_media_url(source_url)
         if not stem:
             continue
-        work_key = sanitize_filename_stem(stem)
+        # Only legacy flat paths need migration naming. Existing work names are exact identifiers.
+        split = _split_media_url(source_url)
+        work_key = stem if split and split[0] == "work" else sanitize_filename_stem(stem)
         work_dir = MEDIA_WORK_SUBDIR / work_key
         if not work_dir.exists():
             continue
-        video_file = _find_first_media_file(work_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
-        audio_file = _find_first_media_file(work_dir, ALLOWED_AUDIO_EXTENSIONS, "audio")
+        videos, audios = work_media_files(work_dir)
+        video_file = videos[0] if videos else None
+        audio_file = audios[0] if audios else None
         if not video_file and not audio_file:
             continue
         conn.execute(

@@ -1,0 +1,21 @@
+# 合集回归验证
+
+所有检查在临时站点副本中生成独立数据库和媒体，不连接部署中的 8090/8091。
+
+安装 requirements.txt 并确保 ffmpeg、ffprobe 在 PATH 后运行后端集成检查：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_collections.py -v
+```
+
+覆盖用户/管理员相同上传能力、批量创建/追加、文件命名和重名拒绝、原始名称显示元数据、禁止混存、旧混存作品兼容、失败清理、重启后的准确名称和跨进程并发追加，以及视频选集/模式/控制权的 WebSocket 同步与恢复。
+
+可选的双用户浏览器检查：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Windows 检测到标准安装位置的 Edge 时优先使用 Edge，否则使用 Playwright Chromium；未安装浏览器依赖时跳过浏览器检查。浏览器检查实际操作两个上传表单，并验证视频上一集/下一集、选集、自动连播、重复、停止、暂停时另一成员接管，以及切换到音频作品后的自动播放器选择和连播。

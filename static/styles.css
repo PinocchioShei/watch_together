@@ -43,6 +43,7 @@ body {
   padding: 20px;
   min-height: 100vh;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
 }
 
@@ -134,6 +135,8 @@ body {
 
 .topbar {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16px;
@@ -166,8 +169,14 @@ body {
 
 .topbar-right {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 10px;
+}
+
+.topbar-right button {
+  width: auto;
 }
 
 h1,
@@ -180,6 +189,7 @@ p {
 
 .layout {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -699,6 +709,39 @@ button.danger:hover {
   gap: 8px;
 }
 
+.collection-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.collection-controls .media-filter-row {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.collection-controls .audio-track-row {
+  grid-template-columns: 72px auto minmax(0, 1fr) auto;
+}
+
+.collection-controls button {
+  width: auto;
+}
+
+.collection-controls select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.collection-controls .audio-track-row select {
+  flex: 1 1 150px;
+}
+
+.import-name-row input {
+  min-width: 0;
+  flex: 1;
+}
+
 .audio-track-row {
   margin: 0;
 }
@@ -864,13 +907,21 @@ video {
   }
 
   .room-content {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     height: auto;
     min-height: 0;
   }
 
   #roomPanel.audio-mode .room-content {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .collection-controls .audio-track-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .collection-controls .audio-track-row label {
+    grid-column: 1 / -1;
   }
 
   .auth-card,

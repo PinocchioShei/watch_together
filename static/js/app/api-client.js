@@ -40,7 +40,7 @@ export function createApiClient(ctx) {
     const hasBody = Object.prototype.hasOwnProperty.call(options, "body");
     const isFormData = hasBody && options.body instanceof FormData;
     const authHeader = state.token ? { Authorization: `Bearer ${state.token}` } : {};
-    const isUploadPath = /\/api\/(upload-video|admin\/import)$/.test(path);
+    const isUploadPath = /\/api\/(import|upload-video|admin\/import)$/.test(path);
     const timeoutMs = isFormData && isUploadPath ? 15 * 60 * 1000 : 12000;
     const maxAttempts = isFormData ? 1 : 3;
     let res;
