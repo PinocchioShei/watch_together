@@ -126,6 +126,16 @@ def init_db() -> None:
         """
     )
 
+    # Serialize this one-time migration when both deployment ports start together.
+    conn.execute("BEGIN IMMEDIATE")
+    user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "last_room_joined_at" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN last_room_joined_at TEXT")
+        conn.execute("""UPDATE users SET last_room_joined_at = (
+            SELECT MAX(joined_at) FROM room_members WHERE user_id = users.id
+        )""")
+    conn.commit()
+
     columns = {
         row[1] for row in conn.execute("PRAGMA table_info(room_state)").fetchall()
     }
@@ -197,3 +207,10 @@ def db_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA busy_timeout = 20000;")
     return conn
+
+
+def record_room_entry(conn: sqlite3.Connection, user_id: int, joined_at: str) -> None:
+    """Keep activity after membership removal; participate in the successful join transaction."""
+    conn.execute("""UPDATE users SET last_room_joined_at=?
+                    WHERE id=? AND (last_room_joined_at IS NULL OR last_room_joined_at < ?)""",
+                 (joined_at, user_id, joined_at))

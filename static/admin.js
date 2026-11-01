@@ -1,4 +1,4 @@
-import { createImportForm, importResultMessage, formatImportProgress } from "./js/app/import-form.js?v=20261101g";
+import { createImportForm, importResultMessage, formatImportProgress } from "./js/app/import-form.js?v=20261101h";
 import { escapeHtml, formatBytes } from "./js/admin/helpers.js";
 
 const state = {
@@ -359,12 +359,22 @@ async function loadOverview() {
   document.getElementById("metricMedia").textContent = `${data.mediaScanned} files`;
 }
 
+function formatLastRoomEntry(value) {
+  if (!value) return "No record";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "No record";
+  return date.toLocaleString(undefined, {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  });
+}
+
 async function loadUsers() {
   const data = await api("/api/admin/users", { method: "GET" });
   const rows = data.items || [];
-  let html = "<table class=\"users-table\"><thead><tr><th>ID</th><th>Username</th><th>Actions</th></tr></thead><tbody>";
+  let html = "<table class=\"users-table\"><thead><tr><th>ID</th><th>Username</th><th title=\"Latest successful entry to any room; shown in your local time\">Last Room Entry</th><th>Actions</th></tr></thead><tbody>";
   rows.forEach((u) => {
-    html += `<tr><td>${u.id}</td><td>${escapeHtml(u.username)}</td><td><div class=\"row-actions\"><button data-reset=\"${u.id}\">Reset Password</button><button class=\"danger\" data-del=\"${u.id}\">Delete</button></div></td></tr>`;
+    html += `<tr><td>${u.id}</td><td>${escapeHtml(u.username)}</td><td>${escapeHtml(formatLastRoomEntry(u.lastRoomJoinedAt))}</td><td><div class=\"row-actions\"><button data-reset=\"${u.id}\">Reset Password</button><button class=\"danger\" data-del=\"${u.id}\">Delete</button></div></td></tr>`;
   });
   html += "</tbody></table>";
   usersTable.innerHTML = html;

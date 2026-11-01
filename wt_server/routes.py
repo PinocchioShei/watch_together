@@ -73,7 +73,7 @@ from .schemas import (
     User,
 )
 from .state import ADMIN_TOKENS, hub
-from .storage import db_conn, init_db
+from .storage import db_conn, init_db, record_room_entry
 from .utils import dt_to_str, now_utc, str_to_dt
 
 
@@ -333,7 +333,7 @@ def create_app() -> FastAPI:
         conn = db_conn()
         try:
             rows = conn.execute(
-                "SELECT id, username, created_at FROM users ORDER BY id DESC"
+                "SELECT id, username, created_at, last_room_joined_at FROM users ORDER BY id DESC"
             ).fetchall()
             return {
                 "items": [
@@ -341,6 +341,7 @@ def create_app() -> FastAPI:
                         "id": r["id"],
                         "username": r["username"],
                         "createdAt": r["created_at"],
+                        "lastRoomJoinedAt": r["last_room_joined_at"],
                     }
                     for r in rows
                 ]
@@ -698,14 +699,16 @@ def create_app() -> FastAPI:
                 (room_name, user.id, room_salt, room_hash, dt_to_str(now_utc())),
             )
             room_id = cursor.lastrowid
+            joined_at = dt_to_str(now_utc())
             conn.execute(
                 "INSERT INTO room_members(room_id, user_id, room_password_cache, joined_at) VALUES (?, ?, ?, ?)",
-                (room_id, user.id, room_password, dt_to_str(now_utc())),
+                (room_id, user.id, room_password, joined_at),
             )
             conn.execute(
                 "INSERT INTO room_state(room_id, updated_at, updated_by, controller_user_id) VALUES (?, ?, ?, ?)",
                 (room_id, dt_to_str(now_utc()), user.id, user.id),
             )
+            record_room_entry(conn, user.id, joined_at)
             conn.commit()
             return {"id": room_id, "name": room_name}
         finally:
@@ -758,6 +761,7 @@ def create_app() -> FastAPI:
             cache_to_save = (
                 submitted_password or cached_password or access_cached_password
             )
+            joined_at = dt_to_str(now_utc())
             conn.execute(
                 """
                 INSERT INTO room_members(room_id, user_id, room_password_cache, joined_at)
@@ -769,7 +773,7 @@ def create_app() -> FastAPI:
                     END,
                     joined_at = excluded.joined_at
                 """,
-                (room_id, user.id, cache_to_save, dt_to_str(now_utc())),
+                (room_id, user.id, cache_to_save, joined_at),
             )
             if cache_to_save:
                 conn.execute(
@@ -782,6 +786,7 @@ def create_app() -> FastAPI:
                     """,
                     (room_id, user.id, cache_to_save, dt_to_str(now_utc())),
                 )
+            record_room_entry(conn, user.id, joined_at)
             conn.commit()
             return {"ok": True}
         finally:

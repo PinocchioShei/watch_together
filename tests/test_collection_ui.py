@@ -83,6 +83,26 @@ class CollectionBrowserTests(unittest.TestCase):
             self.assertFalse(any("taking longer than estimate" in text for text in history), history)
         self.assertEqual(self.errors, [])
 
+    def test_admin_displays_last_room_entry_and_missing_history(self):
+        self.errors = []
+        f = self.fixture
+        f.request("/api/admin/users", payload={"username": "activity_no_record", "password": f.password}, token=f.admin)
+        room = f.request("/api/rooms", payload={"name": "Activity UI", "password": f.password}, token=f.owner)[1]["id"]
+        page = self.page(f.admin, admin=True)
+        expect(page.locator("#usersTable th")).to_have_text(["ID", "Username", "Last Room Entry", "Actions"])
+        unknown = page.locator("#usersTable tbody tr").filter(has_text="activity_no_record")
+        expect(unknown.locator("td").nth(2)).to_have_text("No record")
+        owner = page.locator("#usersTable tbody tr").filter(has_text="collection_owner")
+        value = next(p["lastRoomJoinedAt"] for p in f.request("/api/admin/users", token=f.admin)[1]["items"] if p["username"] == "collection_owner")
+        expected = page.evaluate("value => new Date(value).toLocaleString(undefined,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'})", value)
+        expect(owner.locator("td").nth(2)).to_have_text(expected)
+        expect(owner.locator("button[data-reset]")).to_be_visible()
+        expect(owner.locator("button[data-del]")).to_be_visible()
+        f.request(f"/api/rooms/{room}", token=f.owner, method="DELETE")
+        page.locator("#refreshUsers").click()
+        expect(owner.locator("td").nth(2)).to_have_text(expected)
+        self.assertEqual(self.errors, [])
+
     def test_upload_and_two_user_video_audio_collection_playback(self):
         self.errors = []
         f = self.fixture
@@ -189,19 +209,26 @@ class CollectionBrowserTests(unittest.TestCase):
         owner.evaluate("async () => { const p=document.getElementById('videoPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
         expect(owner.locator("#collectionTrackSelect")).to_have_value("2", timeout=12000)
         expect(peer.locator("#collectionTrackSelect")).to_have_value("2", timeout=12000)
+        for page in (owner, peer):
+            page.wait_for_function("document.getElementById('videoPlayer').readyState >= 2")
+        # The selector updates before the media load and its native events finish.
+        owner.wait_for_timeout(400)
 
         owner.locator("#albumModeSelect").select_option("repeat")
         expect(peer.locator("#albumModeSelect")).to_have_value("repeat")
-        owner.evaluate("async () => { const p=document.getElementById('videoPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
-        owner.wait_for_function("document.getElementById('videoPlayer').currentTime < 1.5")
+        owner.evaluate("async () => { const p=document.getElementById('videoPlayer'); window.repeatWrapped=false; p.addEventListener('seeked', function wrapped() { if (p.currentTime < 1.5) { window.repeatWrapped=true; p.removeEventListener('seeked', wrapped); } }); p.currentTime=p.duration-0.25; await p.play(); }")
+        owner.wait_for_function("window.repeatWrapped && document.getElementById('videoPlayer').currentTime < 1.5")
         expect(owner.locator("#collectionTrackSelect")).to_have_value("2")
         expect(peer.locator("#collectionTrackSelect")).to_have_value("2")
+        for page in (owner, peer):
+            page.wait_for_function("document.getElementById('videoPlayer').readyState >= 2")
+        owner.wait_for_timeout(400)
 
         owner.locator("#albumModeSelect").select_option("stop")
         expect(peer.locator("#albumModeSelect")).to_have_value("stop")
         owner.evaluate("async () => { const p=document.getElementById('videoPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
         owner.wait_for_function("document.getElementById('videoPlayer').ended")
-        peer.wait_for_function("document.getElementById('videoPlayer').paused")
+        peer.wait_for_function("document.getElementById('videoPlayer').paused && document.getElementById('videoPlayer').currentTime > 3.5")
         expect(owner.locator("#collectionTrackSelect")).to_have_value("2")
 
         # A paused peer can take over immediately, including during the previous local action window.

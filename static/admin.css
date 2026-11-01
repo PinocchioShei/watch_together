@@ -662,13 +662,16 @@ th, td {
 }
 
 .users-table th:nth-child(1),
-.users-table td:nth-child(1) { width: 12%; }
+.users-table td:nth-child(1) { width: 8%; }
 
 .users-table th:nth-child(2),
-.users-table td:nth-child(2) { width: 48%; }
+.users-table td:nth-child(2) { width: 28%; }
 
 .users-table th:nth-child(3),
-.users-table td:nth-child(3) { width: 40%; }
+.users-table td:nth-child(3) { width: 32%; }
+
+.users-table th:nth-child(4),
+.users-table td:nth-child(4) { width: 32%; }
 
 .media-table th:nth-child(1),
 .media-table td:nth-child(1) { width: 22%; }
