@@ -385,6 +385,38 @@ class CollectionIntegrationTests(unittest.TestCase):
                 self.assertEqual(state["albumMode"], "repeat")
                 self.assertEqual(state["trackIndex"], 1)
 
+    def test_long_encoded_category_urls_sync_without_truncation(self):
+        for kind, endpoint, content, extension in (
+            ("video", "/api/import", self.video, "mp4"),
+            ("audio", "/api/admin/import", self.audio, "wav"),
+        ):
+            with self.subTest(kind=kind):
+                title = "中文分类合集" * 6 + kind
+                files = [("中文媒体名称" * 6 + f" 第{index}集 #100%.{extension}", content) for index in (1, 2)]
+                status, result = self.upload(files, endpoint=endpoint, work_name=title, media_type="ASMR")
+                self.assertEqual(status, 200, result)
+                selected = result[kind + "Tracks"][1]
+                self.assertGreater(len(selected), 500)
+                self.assertEqual(self.request(selected)[0], 200)
+                room = self.request("/api/rooms", payload={"name": "Long category URL", "password": self.password}, token=self.owner)[1]["id"]
+                self.request(f"/api/rooms/{room}/join", payload={"password": self.password}, token=self.peer)
+                ws_url = f"ws://127.0.0.1:{self.port}/ws/rooms/{room}"
+                with connect(ws_url + "?token=" + self.owner) as owner, connect(ws_url + "?token=" + self.peer) as peer:
+                    self.receive(owner, lambda data: data["type"] == "state")
+                    self.receive(peer, lambda data: data["type"] == "state")
+                    owner.send(json.dumps({"type": "sync", "videoUrl": selected, "currentTime": 0.25,
+                                           "isPlaying": False, "forceTakeover": True, "albumMode": "next"}))
+                    received = self.receive(peer, lambda data: data.get("by") == "collection_owner")
+                    self.assertEqual(received["videoUrl"], selected)
+                    self.assertEqual(received["playMode"], kind)
+                    self.assertEqual(received["trackIndex"], 1)
+                    state = self.request(f"/api/rooms/{room}/state", token=self.owner)[1]
+                    self.assertEqual(state["videoUrl"], selected)
+                    with connect(ws_url + "?token=" + self.owner) as restored:
+                        state = self.receive(restored, lambda data: data["type"] == "state")
+                        self.assertEqual(state["videoUrl"], selected)
+                        self.assertEqual(state["trackIndex"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,8 @@
-import { collectionTracks, collectionMode, collectionLabel } from "./js/app/collections.js?v=20261101e";
-import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101e";
+import { collectionTracks, collectionMode, collectionLabel } from "./js/app/collections.js?v=20261101f";
+import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101f";
 import { normalizeUrl, toMediaPath } from "./js/shared/format.js";
 import { clearRoomSession, createTabLock, readRoomSession, saveRoomSession } from "./js/app/session.js";
-import { createApiClient } from "./js/app/api-client.js?v=20261101e";
+import { createApiClient } from "./js/app/api-client.js?v=20261101f";
 import { createAuthModule } from "./js/app/auth-module.js";
 import { createLobbyModule } from "./js/app/lobby-module.js";
 import { createChatModule } from "./js/app/chat-module.js";

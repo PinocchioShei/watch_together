@@ -60,6 +60,8 @@ class CollectionBrowserTests(unittest.TestCase):
     def test_upload_and_two_user_video_audio_collection_playback(self):
         self.errors = []
         f = self.fixture
+        video_work = "中文视频合集" * 9 + " #100%"
+        audio_work = "中文音频合集" * 9 + " #100%"
         owner = self.page(f.owner)
         expect(owner.locator("#appPanel")).to_be_visible()
         owner.locator("#videoFileInput").set_input_files([
@@ -68,18 +70,18 @@ class CollectionBrowserTests(unittest.TestCase):
         ])
         owner.locator("#importTypeSelect").select_option("movie")
         expect(owner.locator("#userWorkName")).to_be_visible()
-        owner.locator("#userWorkName").fill("UI Videos")
+        owner.locator("#userWorkName").fill(video_work)
         self.assertEqual(self.upload(owner)["mediaKind"], "video")
         expect(owner.locator("#importForm button[type=submit]")).to_be_enabled()
 
         admin = self.page(f.admin, admin=True)
         expect(admin.locator("#dashboard")).to_be_visible()
         admin.locator("button[data-tab=media]").click()
-        video_card = admin.locator(".admin-media-card").filter(has_text="UI Videos")
-        expect(video_card.locator(".admin-media-name")).to_have_text("UI Videos")
+        video_card = admin.locator(".admin-media-card").filter(has_text=video_work)
+        expect(video_card.locator(".admin-media-name")).to_have_text(video_work)
         expect(video_card.locator(".state-badge")).to_have_text("video")
         video_card.click()
-        expect(admin.locator(".media-detail-row").filter(has=admin.locator("b", has_text="Work"))).to_have_text("WorkUI Videos")
+        expect(admin.locator(".media-detail-row").filter(has=admin.locator("b", has_text="Work"))).to_have_text("Work" + video_work)
         admin.locator("#mediaDetailClose").click()
         wav = io.BytesIO()
         with wave.open(wav, "wb") as audio:
@@ -92,11 +94,11 @@ class CollectionBrowserTests(unittest.TestCase):
             self.media_file("Track 2.wav", wav.getvalue(), "audio/wav"),
         ])
         admin.locator("#importType").select_option("music")
-        admin.locator("#adminWorkName").fill("UI Audio")
+        admin.locator("#adminWorkName").fill(audio_work)
         self.assertEqual(self.upload(admin, admin=True)["mediaKind"], "audio")
         admin.locator("#mediaTypeFilter").select_option("all")
-        audio_card = admin.locator(".admin-media-card").filter(has_text="UI Audio")
-        expect(audio_card.locator(".admin-media-name")).to_have_text("UI Audio")
+        audio_card = admin.locator(".admin-media-card").filter(has_text=audio_work)
+        expect(audio_card.locator(".admin-media-name")).to_have_text(audio_work)
         expect(audio_card.locator(".state-badge")).to_have_text("audio")
         expect(admin.locator(".state-badge.yes, .state-badge.no")).to_have_count(0)
 
@@ -107,8 +109,8 @@ class CollectionBrowserTests(unittest.TestCase):
         ):
             expect(page.locator("#importForm button[type=submit]")).to_be_enabled()
             page.locator("#" + mode_id).select_option("append")
-            page.wait_for_function("id => [...document.getElementById(id).options].some(o => o.value === 'UI Videos')", arg=target_id)
-            page.locator("#" + target_id).select_option("UI Videos")
+            page.wait_for_function("([id, work]) => [...document.getElementById(id).options].some(o => o.value === work)", arg=[target_id, video_work])
+            page.locator("#" + target_id).select_option(video_work)
             page.locator("#" + file_id).set_input_files(self.media_file(filename, f.video, "video/mp4"))
             self.assertTrue(self.upload(page, admin=is_admin)["appendMode"])
 
@@ -123,7 +125,7 @@ class CollectionBrowserTests(unittest.TestCase):
             expect(page.locator("#onlineCount")).to_contain_text("2", timeout=10000)
             self.assertEqual(page.locator("#modeSwitch").count(), 0)
 
-        owner.locator(".media-card").filter(has_text="UI Videos").click()
+        owner.locator(".media-card").filter(has_text=video_work).click()
         for page in (owner, peer):
             expect(page.locator("#videoPlayer")).to_be_visible()
             page.wait_for_function("document.getElementById('videoPlayer').readyState >= 2")
@@ -138,6 +140,14 @@ class CollectionBrowserTests(unittest.TestCase):
         expect(peer.locator("#collectionTrackSelect")).to_have_value("0")
         owner.locator("#collectionNext").click()
         expect(peer.locator("#collectionTrackSelect")).to_have_value("1")
+
+        # Refresh restores a long categorized URL and seeking remains synchronized.
+        peer.reload()
+        expect(peer.locator("#roomPanel")).to_be_visible()
+        expect(peer.locator("#collectionTrackSelect")).to_have_value("1")
+        peer.wait_for_function("document.getElementById('videoPlayer').readyState >= 2")
+        owner.evaluate("document.getElementById('videoPlayer').currentTime = 1.4")
+        peer.wait_for_function("Math.abs(document.getElementById('videoPlayer').currentTime - 1.4) < 0.35")
 
         owner.locator("#albumModeSelect").select_option("next")
         expect(peer.locator("#albumModeSelect")).to_have_value("next")
@@ -175,7 +185,7 @@ class CollectionBrowserTests(unittest.TestCase):
             owner.set_viewport_size({"width": 1440, "height": 1000})
 
         owner.locator("#roomMediaTypeFilter").select_option("all")
-        owner.locator(".media-card").filter(has_text="UI Audio").click()
+        owner.locator(".media-card").filter(has_text=audio_work).click()
         for page in (owner, peer):
             expect(page.locator("#audioPlayer")).to_be_visible()
             expect(page.locator("#videoPlayer")).not_to_be_visible()
@@ -187,6 +197,10 @@ class CollectionBrowserTests(unittest.TestCase):
         owner.evaluate("async () => { const p=document.getElementById('audioPlayer'); p.currentTime=p.duration-0.25; await p.play(); }")
         expect(owner.locator("#collectionTrackSelect")).to_have_value("1", timeout=12000)
         expect(peer.locator("#collectionTrackSelect")).to_have_value("1", timeout=12000)
+        peer.reload()
+        expect(peer.locator("#audioPlayer")).to_be_visible()
+        expect(peer.locator("#collectionTrackSelect")).to_have_value("1")
+        peer.wait_for_function("document.getElementById('audioPlayer').readyState >= 2")
         self.assertEqual(self.errors, [])
 
 

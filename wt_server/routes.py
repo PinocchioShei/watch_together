@@ -1032,7 +1032,9 @@ def create_app() -> FastAPI:
                 msg_type = payload.get("type")
                 if msg_type == "sync":
                     action_id = int(payload.get("actionId", 0))
-                    video_url = str(payload.get("videoUrl", "")).strip()[:500]
+                    # Encoded category/work/filename paths can exceed 500 characters.
+                    # Validate the complete URL below; truncation silently selects another source.
+                    video_url = str(payload.get("videoUrl", "")).strip()
                     video_url = normalize_media_url(video_url)
                     play_mode = "audio" if is_audio_media_url(video_url) else "video"
                     if not is_valid_media_url(video_url):
