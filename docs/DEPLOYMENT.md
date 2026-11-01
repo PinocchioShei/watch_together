@@ -157,10 +157,10 @@ Get-Content .\log\debug\server_8090_err.log -Tail 30
 
 ```text
 watch_together.db                  用户、会话、房间、状态、媒体索引
-media/work/<作品键>/<原文件名>.mp4 视频作品/合集；原文件名主体不变
-media/work/<作品键>/<原文件名>.m4a 音频作品/合集；与视频文件互斥
-media/work/<作品键>/cover.jpg       封面
-media/work/<作品键>/.meta.json      分类、标题、媒体种类、原始文件名等元数据
+media/work/<分类>/<作品键>/<原文件名>.mp4 视频作品/合集；原文件名主体不变
+media/work/<分类>/<作品键>/<原文件名>.m4a 音频作品/合集；与视频文件互斥
+media/work/<分类>/<作品键>/cover.jpg       封面
+media/work/<分类>/<作品键>/.meta.json      分类、标题、媒体种类、原始文件名等元数据
 media/tmp/                         上传暂存
 media/default_cover.jpg            默认封面
 resource/                          页面背景图
@@ -187,7 +187,7 @@ resource/                          页面背景图
 | 环境变量改密码无效 | 已存在 admin_account；用原凭据登录后在管理页面修改 |
 | 导入处理中或超时 | 查看错误日志、ffmpeg 进程、磁盘和代理限制；浏览器超时不代表服务端已取消 |
 | 导入失败后 tmp 有文件 | 先确认没有正在导入的任务，再评估清理；当前没有统一后台清理机制 |
-| 媒体改名/删除后房间无法播放 | 重新选取有效作品；当前不联动改写房间旧 URL |
+| 媒体改名/删除后房间无法播放 | 改名或改分类会更新持久化房间 URL；已打开的页面可刷新媒体库，删除后需要另选有效作品 |
 | SQLite database is locked | 检查多进程、并发导入和长事务；busy_timeout 为 20 秒 |
 | 缺背景图 | 核对 resource/day.jpg、night.jpg；resource 只在应用创建时存在才挂载 |
 

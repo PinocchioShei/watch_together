@@ -184,7 +184,7 @@ class CollectionIntegrationTests(unittest.TestCase):
         for endpoint in ("/api/import", "/api/admin/import"):
             status, _ = self.upload([("v.mp4", self.video), ("a.wav", self.audio)], endpoint=endpoint, work_name="Should not exist")
             self.assertEqual(status, 409)
-        self.assertFalse((self.site / "media/work/Should not exist").exists())
+        self.assertFalse((self.site / "media/work/movie/Should not exist").exists())
         for filename, content, other_name, other in (("Kinds video.mp4", self.video, "No audio.wav", self.audio), ("Kinds audio.wav", self.audio, "No video.mp4", self.video)):
             result = self.upload([(filename, content)])[1]
             for endpoint in ("/api/import", "/api/admin/import"):
@@ -198,9 +198,9 @@ class CollectionIntegrationTests(unittest.TestCase):
         self.assertEqual(self.upload(files, work_name="Name collision")[0], 200)
         self.assertEqual(self.upload(files, work_name="Name collision")[0], 409)
         self.assertEqual(self.upload([files[0]], import_mode="append", target_work_key="Name collision")[0], 409)
-        self.assertEqual(len(list((self.site / "media/work/Name collision").glob("*.mp4"))), 2)
+        self.assertEqual(len(list((self.site / "media/work/movie/Name collision").glob("*.mp4"))), 2)
         self.assertEqual(self.upload([("duplicate.mp4", self.video), ("DUPLICATE.mp4", self.video)], work_name="Duplicate batch")[0], 409)
-        self.assertFalse((self.site / "media/work/Duplicate batch").exists())
+        self.assertFalse((self.site / "media/work/movie/Duplicate batch").exists())
         self.assert_clean_staging()
 
     def test_work_titles_strip_only_media_extensions_on_both_apis(self):
@@ -219,8 +219,17 @@ class CollectionIntegrationTests(unittest.TestCase):
     def test_invalid_media_cleans_temporary_files_without_partial_work(self):
         status, _ = self.upload([("valid.mp4", self.video), ("invalid.mp4", b"not a media file")], work_name="Invalid batch")
         self.assertEqual(status, 400)
-        self.assertFalse((self.site / "media/work/Invalid batch").exists())
+        self.assertFalse((self.site / "media/work/movie/Invalid batch").exists())
         self.assert_clean_staging()
+
+    def test_work_named_like_category_is_scanned_once_and_globally_unique(self):
+        status, result = self.upload([("music.mp4", self.video)])
+        self.assertEqual(status, 200, result)
+        self.assertTrue(self.local_path(result["videoUrl"]).is_file())
+        self.assertIn("/work/movie/music/", result["videoUrl"])
+        library = self.request("/api/media", token=self.owner)[1]["items"]
+        self.assertEqual(len([p for p in library if p["workKey"] == "music"]), 1)
+        self.assertEqual(self.upload([("music.mp4", self.video)], media_type="ASMR")[0], 409)
 
     def test_legacy_mixed_work_is_preserved_and_not_appendable(self):
         work = self.site / "media/work/Legacy mixed"
@@ -249,7 +258,10 @@ class CollectionIntegrationTests(unittest.TestCase):
         item = next(item for item in self.request("/api/media", token=self.owner)[1]["items"] if item["workKey"] == result["workKey"])
         self.assertEqual(item["type"], "ASMR")
         self.assertEqual(item["mediaKind"], "audio")
-        self.assertEqual(item["originalNames"][result["audioUrl"]], "原曲 1.wav")
+        self.assertEqual(item["originalNames"][item["audioUrl"]], "原曲 1.wav")
+        self.assertIn("/media/work/ASMR/", item["audioUrl"])
+        self.assertFalse(self.local_path(result["audioUrl"]).exists())
+        self.assertEqual(self.request(result["audioUrl"])[0], 200)  # Old category URL redirects.
 
     def test_restart_preserves_names_and_concurrent_append_never_overwrites(self):
         _, created = self.upload([("Concurrent video.mp4", self.video)])
@@ -291,9 +303,48 @@ class CollectionIntegrationTests(unittest.TestCase):
                                for server_origin in (self.origin, origin)]
                     results = [future.result() for future in futures]
                 self.assertEqual(sorted(status for status, _ in results), [200, 409], results)
-                self.assertEqual(len(list((self.site / "media/work" / created["workKey"]).glob("*.mp4"))), 2)
+                self.assertEqual(len(list((self.site / "media/work/movie" / created["workKey"]).glob("*.mp4"))), 2)
             finally:
                 self.stop_process(server)
+
+    def test_category_move_updates_room_urls_and_supports_rename_append_delete(self):
+        from urllib.parse import quote
+        status, result = self.upload([("Part #1.mp4", self.video), ("Part %2.mp4", self.video)],
+                                     work_name="Folder #retained", media_type="shot")
+        self.assertEqual(status, 200, result)
+        self.assertIn("/work/shot/", result["videoUrl"])
+        old_directory = self.local_path(result["videoUrl"]).parent
+        room = self.request("/api/rooms", payload={"name": "Move category", "password": self.password}, token=self.owner)[1]["id"]
+        with connect(f"ws://127.0.0.1:{self.port}/ws/rooms/{room}?token={self.owner}") as ws:
+            self.receive(ws, lambda data: data["type"] == "state")
+            ws.send(json.dumps({"type": "sync", "videoUrl": result["videoTracks"][1], "currentTime": 1,
+                                "isPlaying": False, "forceTakeover": True, "albumMode": "next"}))
+            self.receive(ws, lambda data: data.get("by") == "collection_owner")
+            key = quote(result["workKey"], safe="")
+            status, _ = self.request(f"/api/admin/media/{key}/type", payload={"mediaType": "ASMR"}, token=self.admin, method="PATCH")
+            self.assertEqual(status, 200)
+            state = self.request(f"/api/rooms/{room}/state", token=self.owner)[1]
+            self.assertIn("/work/ASMR/", state["videoUrl"])
+            self.assertEqual(state["trackIndex"], 1)
+            self.assertFalse(old_directory.exists())
+            for old_url in result["videoTracks"]:
+                self.assertEqual(self.request(old_url)[0], 200)
+                old_flat = "/media/work/" + quote(result["workKey"], safe="") + "/" + old_url.rsplit("/", 1)[1]
+                self.assertEqual(self.request(old_flat)[0], 200)
+            status, renamed = self.request(f"/api/admin/media/{key}", payload={"newWorkName": "Renamed category work.mp4"},
+                                           token=self.admin, method="PATCH")
+            self.assertEqual(status, 200, renamed)
+            self.assertEqual(renamed["work"], "Renamed category work")
+            status, appended = self.upload([("Part 3.mp4", self.video)], endpoint="/api/admin/import",
+                                            import_mode="append", target_work_key=renamed["work"])
+            self.assertEqual(status, 200, appended)
+            self.assertEqual(appended["type"], "ASMR")
+            self.assertIn("/work/ASMR/", appended["videoUrl"])
+            directory = self.local_path(appended["videoUrl"]).parent
+            status, _ = self.request("/api/admin/media/" + quote(renamed["work"], safe=""), token=self.admin, method="DELETE")
+            self.assertEqual(status, 200)
+            self.assertFalse(directory.exists())
+        self.assertEqual(self.request("/media/work/movie/%2e%2e%2f%2e%2e/watch_together.db")[0], 404)
 
     @staticmethod
     def receive(ws, predicate):

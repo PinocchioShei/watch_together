@@ -100,8 +100,47 @@ def sanitize_filename_stem(name: str) -> str:
     return stem[:64]
 
 
-def media_url_from_work(work_key: str, filename: str) -> str:
-    return f"/media/work/{quote(work_key, safe='')}/{quote(filename, safe='')}"
+def iter_work_dirs() -> list[Path]:
+    """Read categorized storage and the previous flat work layout during upgrades."""
+    if not MEDIA_WORK_SUBDIR.exists():
+        return []
+    result = []
+    for directory in MEDIA_WORK_SUBDIR.iterdir():
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        if (directory.name in MEDIA_TYPE_OPTIONS and not (directory / ".meta.json").exists()
+                and not any(p.is_file() and p.suffix.lower() in ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS
+                            for p in directory.iterdir())):
+            result.extend(p for p in directory.iterdir() if p.is_dir() and not p.is_symlink())
+        else:
+            result.append(directory)
+    names = [p.name.casefold() for p in result]
+    if len(names) != len(set(names)):
+        raise HTTPException(status_code=409, detail="Duplicate work names across category directories")
+    return result
+
+
+def resolve_work_dir(work_key: str) -> Path:
+    validate_work_key(work_key)
+    for directory in iter_work_dirs():
+        if directory.name.casefold() == work_key.casefold():
+            return directory
+    fallback = MEDIA_WORK_SUBDIR / work_key
+    fallback = fallback / work_key if work_key in MEDIA_TYPE_OPTIONS and fallback.is_dir() else fallback
+    if (fallback.is_symlink() or fallback.parent.is_symlink()
+            or not fallback.resolve().is_relative_to(MEDIA_WORK_SUBDIR.resolve())):
+        raise HTTPException(status_code=409, detail="Work path escapes media storage")
+    return fallback
+
+
+def work_category(work_dir: Path) -> str:
+    return work_dir.parent.name if work_dir.parent.parent == MEDIA_WORK_SUBDIR and work_dir.parent.name in MEDIA_TYPE_OPTIONS else ""
+
+
+def media_url_from_work(work_key: str, filename: str, media_type: str | None = None) -> str:
+    category = work_category(resolve_work_dir(work_key)) if media_type is None else media_type
+    prefix = f"{category}/" if category else ""
+    return f"/media/work/{prefix}{quote(work_key, safe='')}/{quote(filename, safe='')}"
 
 
 def _natural_name_key(path: Path) -> list[Any]:
@@ -114,13 +153,15 @@ def _split_media_url(url: str) -> tuple[str, str, str] | None:
         return None
     rel = url.removeprefix("/media/")
     parts = rel.split("/")
-    if len(parts) == 4 and parts[0] == "work":
-        _, work_key, filename = parts[0], parts[1], parts[3]
-        if parts[2] != "":
-            # here rel is work/<key>/<filename>, split gave 3 parts; defensive fallback
-            pass
-    if len(parts) == 3 and parts[0] == "work":
-        work_key, filename = unquote(parts[1]), unquote(parts[2])
+    if parts[0] == "work" and len(parts) in {3, 4}:
+        if len(parts) == 4 and parts[1] not in MEDIA_TYPE_OPTIONS:
+            return None
+        work_key, filename = unquote(parts[-2]), unquote(parts[-1])
+        try:
+            validate_work_key(work_key)
+            validate_work_key(filename)
+        except HTTPException:
+            return None
         return ("work", work_key, filename)
     if len(parts) == 2 and parts[0] in {"video", "audio"}:
         return (parts[0], "", unquote(parts[1]))
@@ -158,7 +199,7 @@ def is_audio_media_url(url: str) -> bool:
     if kind == "audio":
         return True
     if Path(filename).suffix.lower() == ".ogg" and kind == "work":
-        path = MEDIA_WORK_SUBDIR / _work_key / filename
+        path = resolve_work_dir(_work_key) / filename
         if path.is_file():
             stat = path.stat()
             return _ambiguous_media_kind(str(path), stat.st_mtime_ns, stat.st_size) == "audio"
@@ -278,9 +319,7 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
 
     created = 0
     updated = 0
-    for work_dir in MEDIA_WORK_SUBDIR.iterdir():
-        if not work_dir.is_dir():
-            continue
+    for work_dir in iter_work_dirs():
         work_key = work_dir.name
         meta_path = _work_meta_path(work_dir)
         old_meta = _read_work_meta(work_dir)
@@ -288,7 +327,7 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
         payload = {
             **old_meta,
             "title": src.get("title") or old_meta.get("title") or work_key,
-            "mediaType": src.get("mediaType")
+            "mediaType": work_category(work_dir) or src.get("mediaType")
             or old_meta.get("mediaType")
             or _guess_media_type(work_key),
             "updatedAt": src.get("updatedAt")
@@ -313,9 +352,9 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def _resolve_cover_url(work_key: str, row_cover_url: str = "") -> str:
-    work_dir = MEDIA_WORK_SUBDIR / work_key
+    work_dir = resolve_work_dir(work_key)
     if row_cover_url:
-        row_path = BASE_DIR / row_cover_url.lstrip("/")
+        row_path = BASE_DIR / unquote(row_cover_url).lstrip("/")
         if row_path.exists():
             return row_cover_url
     cover_file = work_dir / "cover.jpg"
@@ -419,7 +458,7 @@ def _save_uploaded_cover(work_dir: Path, cover: UploadFile) -> str:
 
 
 def _resolve_work_media(work_key: str, prefer: str = "video") -> str:
-    work_dir = MEDIA_WORK_SUBDIR / work_key
+    work_dir = resolve_work_dir(work_key)
     if not work_dir.exists():
         return ""
     if prefer == "audio":
@@ -434,7 +473,7 @@ def _resolve_work_media(work_key: str, prefer: str = "video") -> str:
 
 
 def normalize_media_url(url: str) -> str:
-    """兼容旧格式媒体路径并统一到 /media/work/<work>/<file>。"""
+    """Resolve old flat/category URLs to the current physical category directory."""
     if not url:
         return ""
     split = _split_media_url(url)
@@ -442,8 +481,8 @@ def normalize_media_url(url: str) -> str:
         return url
     kind, work_key, filename = split
     if kind == "work":
-        full = MEDIA_WORK_SUBDIR / work_key / filename
-        return url if full.exists() else ""
+        full = resolve_work_dir(work_key) / filename
+        return media_url_from_work(full.parent.name, filename) if full.is_file() else ""
 
     # Legacy to work layout
     stem = Path(filename).stem
@@ -493,14 +532,13 @@ def work_media_kind(work_dir: Path) -> str:
 def collect_media_files() -> dict[str, dict[str, Any]]:
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
     files = {}
-    for work_dir in MEDIA_WORK_SUBDIR.iterdir():
-        if not work_dir.is_dir():
-            continue
+    for work_dir in iter_work_dirs():
         videos, audios = work_media_files(work_dir)
         if not videos and not audios:
             continue
-        video_tracks = [media_url_from_work(work_dir.name, p.name) for p in videos]
-        audio_tracks = [media_url_from_work(work_dir.name, p.name) for p in audios]
+        category = work_category(work_dir)
+        video_tracks = [media_url_from_work(work_dir.name, p.name, category) for p in videos]
+        audio_tracks = [media_url_from_work(work_dir.name, p.name, category) for p in audios]
         # Retain playback of legacy extracted audio, but never offer mixed works for append.
         files[work_dir.name] = {
             "workKey": work_dir.name,
@@ -510,14 +548,14 @@ def collect_media_files() -> dict[str, dict[str, Any]]:
             "videoTracks": video_tracks,
             "audioTracks": audio_tracks if not videos else [],
             "originalNames": {
-                media_url_from_work(work_dir.name, filename): original
+                media_url_from_work(work_dir.name, filename, category): original
                 for filename, original in (_read_work_meta(work_dir).get("originalNames") or {}).items()
             },
             "coverUrl": _resolve_cover_url(work_dir.name),
             "size": sum(p.stat().st_size for p in videos + audios),
             "updatedAt": dt_to_str(datetime.fromtimestamp(
                 max(p.stat().st_mtime for p in work_dir.iterdir() if p.is_file()), timezone.utc)),
-            "meta": _read_work_meta(work_dir),
+            "meta": {**_read_work_meta(work_dir), **({"mediaType": category} if category else {})},
         }
     return files
 
@@ -589,9 +627,7 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def list_appendable_works() -> list[dict[str, Any]]:
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
     items = []
-    for work_dir in MEDIA_WORK_SUBDIR.iterdir():
-        if not work_dir.is_dir():
-            continue
+    for work_dir in iter_work_dirs():
         kind = work_media_kind(work_dir)
         if kind not in {"audio", "video"}:
             continue
@@ -602,7 +638,7 @@ def list_appendable_works() -> list[dict[str, Any]]:
         items.append({
             "workKey": work_dir.name,
             "name": meta.get("title") or work_dir.name,
-            "type": meta.get("mediaType") or _guess_media_type(work_dir.name),
+            "type": work_category(work_dir) or meta.get("mediaType") or _guess_media_type(work_dir.name),
             "mediaKind": kind,
             "trackCount": len(videos if kind == "video" else audios),
             "coverUrl": _resolve_cover_url(work_dir.name),
@@ -630,7 +666,7 @@ def derive_media_track_index(url: str) -> int | None:
     if not split or split[0] != "work":
         return None
     _, work_key, filename = split
-    videos, audios = work_media_files(MEDIA_WORK_SUBDIR / work_key)
+    videos, audios = work_media_files(resolve_work_dir(work_key))
     tracks = audios if is_audio_media_url(url) else videos
     return next((index for index, path in enumerate(tracks) if path.name == filename), None)
 
@@ -643,7 +679,7 @@ def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
     validate_work_key(stem)
 
     deleted_files: list[str] = []
-    work_dir = MEDIA_WORK_SUBDIR / stem
+    work_dir = resolve_work_dir(stem)
     if work_dir.exists() and work_dir.is_dir():
         for path in work_dir.iterdir():
             if path.is_file():
@@ -678,62 +714,81 @@ def remove_media_by_stem(conn: sqlite3.Connection, stem: str) -> dict[str, Any]:
     return {"deletedFiles": deleted_files, "deletedAssetRows": len(delete_ids)}
 
 
-def rename_media_work(
-    conn: sqlite3.Connection, old_key: str, new_name: str
-) -> dict[str, Any]:
-    validate_work_key(old_key)
-    target_key = normalize_work_name(new_name.strip())
+def rewrite_work_urls(conn: sqlite3.Connection, old_key: str, directory: Path) -> int:
+    """Update the index and every persisted episode URL inside the caller's transaction."""
+    key, category = directory.name, work_category(directory)
+    videos, audios = work_media_files(directory)
+    if not videos and not audios:
+        raise HTTPException(status_code=400, detail="Work folder missing playable media")
+    meta = _read_work_meta(directory)
+    now = dt_to_str(now_utc())
+    video = media_url_from_work(key, videos[0].name, category) if videos else ""
+    audio = media_url_from_work(key, audios[0].name, category) if audios else ""
+    cover = media_url_from_work(key, "cover.jpg", category) if (directory / "cover.jpg").exists() else "/media/default_cover.jpg"
+    rows = [row for row in conn.execute("SELECT id,video_url,audio_url FROM media_assets").fetchall()
+            if stem_from_media_url(row["video_url"] or row["audio_url"] or "") == old_key]
+    values = (meta.get("title") or key, video, audio, cover, category or meta.get("mediaType") or "movie", now)
+    for row in rows:
+        conn.execute("UPDATE media_assets SET title=?,video_url=?,audio_url=?,cover_url=?,media_type=?,updated_at=? WHERE id=?",
+                     (*values, row["id"]))
+    if not rows:
+        conn.execute("""INSERT INTO media_assets(title,video_url,audio_url,cover_url,media_type,updated_at,
+                     created_at,size,duration) VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (*values, now, sum(p.stat().st_size for p in videos + audios),
+                      sum(float(value) for value in (meta.get("trackDurations") or {}).values())))
+    for row in conn.execute("SELECT room_id,video_url FROM room_state").fetchall():
+        split = _split_media_url(row["video_url"] or "")
+        if split and split[0] == "work" and split[1] == old_key and (directory / split[2]).is_file():
+            conn.execute("UPDATE room_state SET video_url=? WHERE room_id=?",
+                         (media_url_from_work(key, split[2], category), row["room_id"]))
+    return len(rows)
 
-    src_dir = MEDIA_WORK_SUBDIR / old_key
-    if not src_dir.exists() or not src_dir.is_dir():
+
+def relocate_media_work(conn: sqlite3.Connection, key: str, category: str, new_key: str | None = None) -> dict[str, Any]:
+    if category not in MEDIA_TYPE_OPTIONS:
+        raise HTTPException(status_code=422, detail="Invalid media type")
+    source = resolve_work_dir(key)
+    if not source.is_dir():
         raise HTTPException(status_code=404, detail="Work folder not found")
-
-    dst_dir = MEDIA_WORK_SUBDIR / target_key
-    if src_dir.resolve() != dst_dir.resolve() and dst_dir.exists():
+    key = source.name
+    target_key = normalize_work_name(new_key) if new_key is not None else key
+    existing = resolve_work_dir(target_key)
+    if existing.is_dir() and existing.resolve() != source.resolve():
         raise HTTPException(status_code=409, detail="Target work name already exists")
+    target = MEDIA_WORK_SUBDIR / category / target_key
+    if target.parent.is_symlink() or not target.resolve().is_relative_to(MEDIA_WORK_SUBDIR.resolve()):
+        raise HTTPException(status_code=409, detail="Work destination escapes media storage")
+    if source.resolve() in target.resolve().parents:
+        raise HTTPException(status_code=409, detail="Legacy category-name work requires offline migration")
+    if target.exists() and target.resolve() != source.resolve():
+        raise HTTPException(status_code=409, detail="Target directory already exists")
+    old_meta = (source / ".meta.json").read_bytes() if (source / ".meta.json").exists() else None
+    moved = False
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if source != target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(target)
+            moved = True
+        _write_work_meta(target, category, target_key if new_key is not None else _read_work_meta(target).get("title") or key)
+        count = rewrite_work_urls(conn, key, target)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        if moved:
+            target.rename(source)
+        if old_meta is None:
+            (source / ".meta.json").unlink(missing_ok=True)
+        else:
+            (source / ".meta.json").write_bytes(old_meta)
+        raise
+    return {"ok": True, "work": target_key, "mediaKey": target_key, "type": category, "updatedRows": count}
 
-    if src_dir.resolve() != dst_dir.resolve():
-        src_dir.rename(dst_dir)
 
-    video_file = _find_first_media_file(dst_dir, ALLOWED_VIDEO_EXTENSIONS, "video")
-    ordered_audio_files = _list_ordered_audio_files(dst_dir)
-    audio_file = ordered_audio_files[0] if ordered_audio_files else None
-    if not video_file and not audio_file:
-        raise HTTPException(
-            status_code=400, detail="Work folder missing playable media file"
-        )
-
-    meta = _read_work_meta(dst_dir)
-    _write_work_meta(
-        dst_dir,
-        (meta.get("mediaType") or _guess_media_type(target_key)),
-        title=target_key,
-        extra=(
-            {"audioTrackOrder": [p.name for p in ordered_audio_files]}
-            if ordered_audio_files
-            else None
-        ),
-    )
-
-    rows = conn.execute("SELECT id, video_url, audio_url FROM media_assets").fetchall()
-    update_ids = [
-        row["id"]
-        for row in rows
-        if stem_from_media_url(row["video_url"] or row["audio_url"] or "") == old_key
-    ]
-    for row_id in update_ids:
-        conn.execute(
-            "UPDATE media_assets SET title = ?, video_url = ?, audio_url = ?, updated_at = ? WHERE id = ?",
-            (
-                target_key,
-                media_url_from_work(target_key, video_file.name) if video_file else "",
-                media_url_from_work(target_key, audio_file.name) if audio_file else "",
-                dt_to_str(now_utc()),
-                row_id,
-            ),
-        )
-    conn.commit()
-    return {"ok": True, "work": target_key, "updatedRows": len(update_ids)}
+def rename_media_work(conn: sqlite3.Connection, old_key: str, new_name: str) -> dict[str, Any]:
+    directory = resolve_work_dir(old_key)
+    category = work_category(directory) or _read_work_meta(directory).get("mediaType") or _guess_media_type(old_key)
+    return relocate_media_work(conn, old_key, category, new_name.strip())
 
 
 def ensure_ffmpeg_tools() -> None:
@@ -858,7 +913,7 @@ async def _convert_import_file(raw_path: Path, output_path: Path,
 
 def _persist_import(work_key: str, kind: str, title: str, media_type: str,
                     duration: float) -> dict[str, Any]:
-    work_dir = MEDIA_WORK_SUBDIR / work_key
+    work_dir = resolve_work_dir(work_key)
     videos, audios = work_media_files(work_dir)
     video_tracks = [media_url_from_work(work_key, path.name) for path in videos]
     audio_tracks = [media_url_from_work(work_key, path.name) for path in audios]
@@ -943,7 +998,8 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
             if append:
                 work_key = target_work_key.strip()
                 validate_work_key(work_key)
-                work_dir = MEDIA_WORK_SUBDIR / work_key
+                work_dir = resolve_work_dir(work_key)
+                work_key = work_dir.name
                 if not work_dir.is_dir():
                     raise HTTPException(status_code=404, detail="Append target not found")
                 existing_kind = work_media_kind(work_dir)
@@ -955,11 +1011,13 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
                 if len(prepared) > 1 and not work_name.strip():
                     raise HTTPException(status_code=422, detail="A collection name is required for multiple files")
                 work_key = normalize_work_name(work_name.strip() if len(prepared) > 1 else prepared[0][0])
-                work_dir = MEDIA_WORK_SUBDIR / work_key
-                if work_dir.exists():
+                if resolve_work_dir(work_key).exists():
                     raise HTTPException(status_code=409, detail="A work with this name already exists; append to it or choose another collection name")
+                work_dir = MEDIA_WORK_SUBDIR / media_type / work_key
+                if work_dir.parent.is_symlink() or not work_dir.resolve().is_relative_to(MEDIA_WORK_SUBDIR.resolve()):
+                    raise HTTPException(status_code=409, detail="Work destination escapes media storage")
             old_meta = _read_work_meta(work_dir) if append else {}
-            effective_type = old_meta.get("mediaType") or media_type or _guess_media_type(work_key)
+            effective_type = work_category(work_dir) or old_meta.get("mediaType") or media_type or _guess_media_type(work_key)
             if effective_type not in MEDIA_TYPE_OPTIONS:
                 raise HTTPException(status_code=422, detail="Invalid media type")
             title = old_meta.get("title") or work_key
@@ -980,7 +1038,7 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
                 transcoded = await _convert_import_file(raw_path, output_dir / name, kind, probe)
                 durations[name] = float((probe.get("format") or {}).get("duration") or 0)
                 original_names[name] = original
-                imported.append({"filename": original, "url": media_url_from_work(work_key, name),
+                imported.append({"filename": original, "url": media_url_from_work(work_key, name, work_category(work_dir)),
                                  "profile": extract_media_profile(probe), "transcoded": transcoded})
             if not append or not (work_dir / "cover.jpg").exists():
                 if cover:
@@ -1006,6 +1064,7 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
                         published.append(target)
                     (output_dir / ".meta.json").replace(work_dir / ".meta.json")
                 else:
+                    work_dir.parent.mkdir(parents=True, exist_ok=True)
                     output_dir.replace(work_dir)
                     published_work = True
                 result = _persist_import(work_key, kind, title, effective_type, sum(durations.values()))
@@ -1098,7 +1157,7 @@ def migrate_media_layout(conn: sqlite3.Connection) -> dict[str, int]:
         # Only legacy flat paths need migration naming. Existing work names are exact identifiers.
         split = _split_media_url(source_url)
         work_key = stem if split and split[0] == "work" else sanitize_filename_stem(stem)
-        work_dir = MEDIA_WORK_SUBDIR / work_key
+        work_dir = resolve_work_dir(work_key)
         if not work_dir.exists():
             continue
         videos, audios = work_media_files(work_dir)

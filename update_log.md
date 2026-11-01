@@ -673,3 +673,11 @@
 - Updated the offline migration and naming documentation. Bumped user/admin frontend build and module references to `20261101c`. This change is local only, without a remote push.
 - Applied to 40 existing work directories/titles with synchronized media/cover URLs; all 142 resource filenames and bytes remain unchanged. Full independent backup: `backups/legacy-media-20261101-c`.
 - Validation: all 19 regressions passed, including both upload APIs, preserved version numbers, title conflicts and migration rollback. Restarted 8090/8091 and verified all 48 works/append targets, 142 HTTP Range responses and 48 covers; account/session/room tables are unchanged.
+
+## 2026-11-01 — Store works under category directories
+- New imports use `media/work/<category>/<work>/` for movie, RJ, ASMR, music and shot. Work names remain globally unique and workKey/mediaKey remain stable title identifiers.
+- Updated library scanning, covers, append, rename, delete and synchronization for categorized paths. Changing category moves the directory and updates index/cover/persisted episode URLs, preserving metadata and rolling back on failure. Media mutations share the import lock across server processes.
+- Added compatibility redirects from flat and previous-category URLs, retaining HTTP Range support and validating path boundaries. Added a backed-up offline category migration; legacy naming/audio cleanup also understands categorized directories.
+- Updated storage/deployment documentation and user/admin build/module versions to `20261101d`.
+- Migrated all 48 existing works into category directories (movie 18, ASMR 17, RJ 7, music 4, shot 2), without changing resource filenames or bytes. Independent full media/SQLite backup: `backups/media-categories-20261101-d`; backup and migrated files passed SHA-256 verification.
+- Validation: all 27 regression/browser tests passed, including category moves, rollback, old URLs and synchronization. Restarted 8090/8091 and verified 142 media HTTP Range responses, 142 old media links, 48 covers and 48 append targets. Work IDs/titles/categories and account/session/room tables are unchanged; both pages serve build `20261101d`.

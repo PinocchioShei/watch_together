@@ -6,7 +6,7 @@
 - 选中作品自动使用视频或音频播放器；WebSocket 同步播放/暂停、拖动、选集和合集连播模式，成员主动操作可以接管控制。
 - 上传视频或音频，通过 ffmpeg 归一化格式、生成封面；新作品只存视频文件或音频文件，不额外提取视频音轨。
 - 用户与管理员共用上传能力：批量创建/追加视频或音频合集，单次最多 30 文件，禁止混存。管理员还可维护用户、房间和媒体。
-- 媒体保存在本地 `media/work/<作品键>/`，SQLite 保存账号、房间、播放状态和媒体索引。
+- 媒体按现有五种分类保存在本地 `media/work/<分类>/<作品键>/`，SQLite 保存账号、房间、播放状态和媒体索引。修改作品分类会同步移动目录。
 
 ## Windows 快速启动
 
@@ -52,7 +52,7 @@ $env:WATCH_ADMIN_PASSWORD = [System.Net.NetworkCredential]::new("", $adminPasswo
 | `static/` | 用户和管理页面，浏览器直接加载 ES modules |
 | `resource/` | 日夜主题背景图 |
 | `watch_together.db` | SQLite 数据库，运行时可能有 `-wal` / `-shm` 辅助文件 |
-| `media/work/<作品键>/` | 媒体文件、`cover.jpg` 和 `.meta.json` |
+| `media/work/<分类>/<作品键>/` | 分类目录中的媒体文件、`cover.jpg` 和 `.meta.json` |
 | `media/tmp/` | 上传暂存文件 |
 | `media/video/`、`media/audio/` | 历史布局，启动时迁移到作品目录 |
 | `log/debug/` | 服务及同步日志 |

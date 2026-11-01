@@ -2,6 +2,25 @@
 
 `tools/migrate_legacy_media.py` 是离线维护工具，默认只生成计划，不在服务启动时自动执行。
 
+## 按分类整理目录
+
+当前新上传使用 `media/work/<分类>/<work>/`，分类为 movie、RJ、ASMR、music、shot。历史平铺 work 可使用下面的专用工具；作品名、媒体名和元数据扩展字段均保留，分类优先沿用已有目录/元数据，其次数据库分类。work 名仍全站唯一。
+
+```powershell
+# 只读检查现有作品的分类和目标路径
+.\.venv\Scripts\python.exe tools/migrate_media_categories.py
+
+# 停止全部服务后执行；完整备份路径必须是新目录且位于公开 media 外
+.\.venv\Scripts\python.exe tools/migrate_media_categories.py --apply `
+  --backup-dir 'D:\project\watch_together_local\backups\category-migration-YYYYMMDD-HHMMSS'
+```
+
+分类迁移完整备份 media 和 SQLite，校验 SHA-256 后移动目录并更新媒体索引、封面和房间保存的每一项 URL。文件不重新转码；普通失败回滚全部已移动目录及数据库事务。重复预览已迁移目录的 movedWorks 为 0。非法分类、重名、目标冲突、链接及无法直接嵌套的历史同名目录会停止迁移，保留源数据。恢复遵循下文同一批次数据库/媒体备份的要求。
+
+服务兼容旧平铺路径和分类变化前的路径，返回 307 到当前资源，Range 可继续使用。管理员改分类也会移动目录并保持原始名称元数据。目录和索引的跨进程修改与导入使用同一把文件锁；不同端口仍不共享 WebSocket 广播。
+
+下面的旧音轨/命名整理工具同时兼容平铺和分类目录，不会把分类目录当成作品。
+
 ## 规则
 
 - 用 ffprobe 检查真实媒体流。

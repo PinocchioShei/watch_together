@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 
 EXTENSIONS = {".mp4", ".webm", ".ogg", ".mov", ".m4a", ".mp3", ".wav", ".aac", ".flac"}
+CATEGORIES = {"movie", "RJ", "ASMR", "music", "shot"}
 
 
 def valid_name(value):
@@ -40,15 +41,21 @@ def child(root, relative):
     return path
 
 
-def url(key, filename):
+def url(key, filename, category=""):
     from urllib.parse import quote
-    return f"/media/work/{quote(key, safe='')}/{quote(filename, safe='')}"
+    prefix = category + "/" if category else ""
+    return f"/media/work/{prefix}{quote(key, safe='')}/{quote(filename, safe='')}"
+
+
+def plan_url(plan, filename, target=True):
+    relative = Path(plan["target" if target else "source"])
+    return url(relative.name, filename, relative.parent.name if relative.parent != Path(".") else "")
 
 
 def url_work(value):
     from urllib.parse import unquote
     parts = (value or "").split("/")
-    return unquote(parts[3]) if len(parts) == 5 and parts[1:3] == ["media", "work"] else ""
+    return unquote(parts[-2]) if len(parts) in {5, 6} and parts[1:3] == ["media", "work"] else ""
 
 
 def probe(path):
@@ -68,7 +75,15 @@ def build_plan(project):
     media = project / "media"
     work_root = media / "work"
     plans = []
+    directories = []
     for directory in sorted(work_root.iterdir()):
+        if (directory.is_dir() and not directory.is_symlink() and directory.name in CATEGORIES
+                and not (directory / ".meta.json").exists()
+                and not any(p.is_file() and p.suffix.lower() in EXTENSIONS for p in directory.iterdir())):
+            directories.extend(sorted(directory.iterdir()))
+        else:
+            directories.append(directory)
+    for directory in directories:
         if directory.is_symlink():
             raise ValueError(f"Symlink work needs manual review: {directory}")
         if not directory.is_dir():
@@ -121,13 +136,15 @@ def build_plan(project):
             if new != old and (directory / new).exists():
                 raise ValueError(f"Filename collision: {directory / new}")
         plans.append({"oldKey": directory.name, "newKey": key, "kind": kind,
+                      "source": str(directory.relative_to(work_root)),
+                      "target": str((directory.parent / key).relative_to(work_root)),
                       "renames": renamed, "tracks": tracks, "archived": archived,
                       "originalNames": original_names, "oldMeta": meta})
     names = [p["newKey"].casefold() for p in plans]
     if len(set(names)) != len(names):
         raise ValueError("Work name collision; no files have been changed")
     for plan in plans:
-        destination = child(work_root, plan["newKey"])
+        destination = child(work_root, plan["target"])
         if plan["newKey"] != plan["oldKey"] and destination.exists():
             raise ValueError(f"Work destination already exists: {destination}")
     # Flat legacy directories must already have gone through the normal startup migration.
@@ -187,7 +204,7 @@ def migrate(project, plans, backup):
         mappings = {}
         for plan in plans:
             old_key, key = plan["oldKey"], plan["newKey"]
-            directory = child(root, old_key)
+            directory = child(root, plan["source"])
             for track in plan["archived"]:
                 source = child(directory, track["name"])
                 if file_hash(source) != manifest[str(source.relative_to(project / "media"))]["sha256"]:
@@ -200,7 +217,7 @@ def migrate(project, plans, backup):
                     source.rename(destination)
                     journal.append((source, destination))
             if key != old_key:
-                destination = child(root, key)
+                destination = child(root, plan["target"])
                 directory.rename(destination)
                 journal.append((directory, destination))
                 directory = destination
@@ -216,14 +233,14 @@ def migrate(project, plans, backup):
                                            "archivedFiles": [p["name"] for p in plan["archived"]]}
             if meta != plan["oldMeta"]:
                 meta["updatedAt"] = stamp
-                metadata_paths.append(old_key)
+                metadata_paths.append(plan["source"])
                 (directory / ".meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             names = list(plan["renames"].values())
             # Use the same natural ordering as the library.
             names.sort(key=lambda name: [int(p) if p.isdigit() else p.casefold() for p in re.split(r"(\d+)", name)])
-            primary = url(key, names[0])
+            primary = plan_url(plan, names[0])
             video, audio = (primary, "") if plan["kind"] == "video" else ("", primary)
-            cover = url(key, "cover.jpg") if (directory / "cover.jpg").exists() else "/media/default_cover.jpg"
+            cover = plan_url(plan, "cover.jpg") if (directory / "cover.jpg").exists() else "/media/default_cover.jpg"
             values = (meta["title"], video, audio, cover, meta["mediaType"],
                       sum(p["duration"] for p in plan["tracks"]), sum(p["size"] for p in plan["tracks"]), stamp)
             matches = [row for row in existing if url_work(row["video_url"] or row["audio_url"]) == old_key]
@@ -236,9 +253,9 @@ def migrate(project, plans, backup):
                 conn.execute("""INSERT INTO media_assets(title,video_url,audio_url,cover_url,media_type,
                              duration,size,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)""", (*values, stamp))
             for old, new in plan["renames"].items():
-                mappings[url(old_key, old)] = url(key, new)
+                mappings[plan_url(plan, old, target=False)] = plan_url(plan, new)
             for track in plan["archived"]:
-                mappings[url(old_key, track["name"])] = primary
+                mappings[plan_url(plan, track["name"], target=False)] = primary
         stale = [row["id"] for row in existing if row["id"] not in kept]
         conn.executemany("DELETE FROM media_assets WHERE id=?", [(value,) for value in stale])
         from urllib.parse import unquote
@@ -250,8 +267,8 @@ def migrate(project, plans, backup):
         # Every retained/archived media byte is checked against the independent snapshot.
         for plan in plans:
             for track in plan["tracks"]:
-                original = str(Path("work") / plan["oldKey"] / track["name"])
-                destination = child(child(root, plan["newKey"]), plan["renames"][track["name"]])
+                original = str(Path("work") / plan["source"] / track["name"])
+                destination = child(child(root, plan["target"]), plan["renames"][track["name"]])
                 if file_hash(destination) != manifest[original]["sha256"]:
                     raise ValueError(f"Post-migration checksum mismatch: {destination}")
         result = {"works": len(plans), "renamedWorks": sum(p["oldKey"] != p["newKey"] for p in plans),

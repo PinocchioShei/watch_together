@@ -16,7 +16,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import (
@@ -40,6 +40,8 @@ from .config import (
     SYNC_LOG_FILE,
 )
 from .media import (
+    _import_lock,
+    _split_media_url,
     backfill_work_meta,
     collect_media_files,
     derive_media_track_index,
@@ -51,6 +53,7 @@ from .media import (
     migrate_media_layout,
     normalize_media_url,
     rename_media_work,
+    relocate_media_work,
     remove_media_by_stem,
     stem_from_media_url,
 )
@@ -160,6 +163,22 @@ def ensure_room_member(room_id: int, user_id: int) -> None:
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    @app.get("/media/work/{media_path:path}", include_in_schema=False)
+    def work_media_response(media_path: str):
+        from urllib.parse import quote, unquote
+        incoming = "/media/work/" + quote(media_path, safe="/")
+        if not _split_media_url(incoming):
+            raise HTTPException(status_code=404, detail="Media not found")
+        canonical = normalize_media_url(incoming)
+        if not canonical:
+            raise HTTPException(status_code=404, detail="Media not found")
+        physical = MEDIA_DIR.parent / unquote(canonical).lstrip("/")
+        if not physical.resolve().is_relative_to(MEDIA_DIR.resolve()):
+            raise HTTPException(status_code=404, detail="Media not found")
+        if canonical != incoming:
+            return RedirectResponse(canonical, status_code=307)
+        return FileResponse(physical)
+
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
     if RESOURCE_DIR.exists():
         app.mount(
@@ -433,93 +452,38 @@ def create_app() -> FastAPI:
         }
 
     @app.delete("/api/admin/media/{media_key}")
-    def admin_delete_media(media_key: str, _: str = Depends(require_admin)):
+    async def admin_delete_media(media_key: str, _: str = Depends(require_admin)):
         conn = db_conn()
         try:
-            result = remove_media_by_stem(conn, media_key)
+            async with _import_lock():
+                result = remove_media_by_stem(conn, media_key)
             return {"ok": True, **result}
         finally:
             conn.close()
 
     @app.patch("/api/admin/media/{media_key}")
-    def admin_rename_media(
+    async def admin_rename_media(
         media_key: str,
         payload: AdminRenameMediaPayload,
         _: str = Depends(require_admin),
     ):
         conn = db_conn()
         try:
-            return rename_media_work(conn, media_key, payload.newWorkName)
+            async with _import_lock():
+                return rename_media_work(conn, media_key, payload.newWorkName)
         finally:
             conn.close()
 
     @app.patch("/api/admin/media/{media_key}/type")
-    def admin_update_media_type(
+    async def admin_update_media_type(
         media_key: str,
         payload: AdminUpdateMediaTypePayload,
         _: str = Depends(require_admin),
     ):
-        media_type = (payload.mediaType or "").strip()
-        if media_type not in {"movie", "RJ", "ASMR", "music", "shot"}:
-            raise HTTPException(status_code=422, detail="Invalid media type")
-
         conn = db_conn()
         try:
-            row = next((entry for entry in conn.execute(
-                "SELECT id, video_url, audio_url FROM media_assets ORDER BY updated_at DESC"
-            ).fetchall() if stem_from_media_url(entry["video_url"] or entry["audio_url"] or "") == media_key), None)
-            now_str = dt_to_str(now_utc())
-            if row:
-                conn.execute(
-                    "UPDATE media_assets SET media_type = ?, updated_at = ? WHERE id = ?",
-                    (media_type, now_str, row["id"]),
-                )
-            else:
-                # Some historical assets exist only on filesystem under media/work/<work>/ and
-                # have no DB row yet. Create a lightweight row so type update can persist.
-                file_index = collect_media_files()
-                file_meta = file_index.get(media_key)
-                if not file_meta:
-                    raise HTTPException(status_code=404, detail="Media not found")
-                cover_url = (
-                    file_meta.get("coverUrl") or f"/media/work/{media_key}/cover.jpg"
-                )
-                conn.execute(
-                    """
-                    INSERT INTO media_assets(title, video_url, audio_url, cover_url, media_type, duration, size, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        media_key,
-                        file_meta.get("videoUrl") or "",
-                        file_meta.get("audioUrl") or "",
-                        cover_url,
-                        media_type,
-                        0,
-                        int(file_meta.get("size") or 0),
-                        now_str,
-                        now_str,
-                    ),
-                )
-
-            # Keep filesystem sidecar in sync for DB-less fallback items.
-            work_dir = MEDIA_DIR / "work" / media_key
-            if work_dir.exists() and work_dir.is_dir():
-                meta_path = work_dir / ".meta.json"
-                try:
-                    meta_payload = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-                    meta_payload.update({
-                        "mediaType": media_type,
-                        "title": media_key,
-                        "updatedAt": now_str,
-                    })
-                    meta_path.write_text(
-                        json.dumps(meta_payload, ensure_ascii=False), encoding="utf-8"
-                    )
-                except Exception:
-                    pass
-            conn.commit()
-            return {"ok": True, "mediaKey": media_key, "type": media_type}
+            async with _import_lock():
+                return relocate_media_work(conn, media_key, (payload.mediaType or "").strip())
         finally:
             conn.close()
 

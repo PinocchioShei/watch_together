@@ -1,4 +1,4 @@
-import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101c";
+import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101d";
 import { escapeHtml, formatBytes } from "./js/admin/helpers.js";
 
 const state = {
