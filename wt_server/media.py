@@ -1,7 +1,8 @@
 """媒体扫描、索引与导入转码逻辑。"""
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 import errno
 import json
 import os
@@ -29,12 +30,27 @@ from .config import (
     MEDIA_WORK_DIR,
 )
 from .storage import db_conn
+from .import_progress import ImportProgress
 from .utils import dt_to_str, now_utc
 
 
 MEDIA_WORK_SUBDIR = MEDIA_WORK_DIR / "work"
 MEDIA_TYPE_OPTIONS = {"movie", "RJ", "ASMR", "music", "shot"}
 _IMPORT_LOCK = asyncio.Lock()
+_WORK_INDEX = ContextVar("work_directory_index", default=None)
+
+
+@contextmanager
+def work_directory_index():
+    """Reuse one directory snapshot within a read operation, never across mutations."""
+    if _WORK_INDEX.get() is not None:
+        yield
+        return
+    token = _WORK_INDEX.set({p.name.casefold(): p for p in iter_work_dirs()})
+    try:
+        yield
+    finally:
+        _WORK_INDEX.reset(token)
 
 
 def validate_work_key(name: str) -> str:
@@ -122,9 +138,11 @@ def iter_work_dirs() -> list[Path]:
 
 def resolve_work_dir(work_key: str) -> Path:
     validate_work_key(work_key)
-    for directory in iter_work_dirs():
-        if directory.name.casefold() == work_key.casefold():
-            return directory
+    index = _WORK_INDEX.get()
+    if index is None:
+        index = {p.name.casefold(): p for p in iter_work_dirs()}
+    if work_key.casefold() in index:
+        return index[work_key.casefold()]
     fallback = MEDIA_WORK_SUBDIR / work_key
     fallback = fallback / work_key if work_key in MEDIA_TYPE_OPTIONS and fallback.is_dir() else fallback
     if (fallback.is_symlink() or fallback.parent.is_symlink()
@@ -352,11 +370,11 @@ def backfill_work_meta(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def _resolve_cover_url(work_key: str, row_cover_url: str = "") -> str:
-    work_dir = resolve_work_dir(work_key)
     if row_cover_url:
         row_path = BASE_DIR / unquote(row_cover_url).lstrip("/")
         if row_path.exists():
             return row_cover_url
+    work_dir = resolve_work_dir(work_key)
     cover_file = work_dir / "cover.jpg"
     if cover_file.exists():
         return media_url_from_work(work_key, "cover.jpg")
@@ -529,6 +547,7 @@ def work_media_kind(work_dir: Path) -> str:
     return _read_work_meta(work_dir).get("mediaKind", "audio")
 
 
+@work_directory_index()
 def collect_media_files() -> dict[str, dict[str, Any]]:
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
     files = {}
@@ -560,6 +579,7 @@ def collect_media_files() -> dict[str, dict[str, Any]]:
     return files
 
 
+@work_directory_index()
 def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     file_index = collect_media_files()
     rows = conn.execute(
@@ -624,6 +644,7 @@ def list_media_library(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return items
 
 
+@work_directory_index()
 def list_appendable_works() -> list[dict[str, Any]]:
     MEDIA_WORK_SUBDIR.mkdir(parents=True, exist_ok=True)
     items = []
@@ -880,13 +901,13 @@ def is_browser_friendly_mp4(
 
 
 async def _convert_import_file(raw_path: Path, output_path: Path,
-                               kind: str, probe: dict[str, Any]) -> bool:
+                               kind: str, probe: dict[str, Any], on_progress=None) -> bool:
     has_audio = any(s.get("codec_type") == "audio" for s in probe.get("streams", []))
     video_stream = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"
                          and not (s.get("disposition") or {}).get("attached_pic")), {})
     video_map = f"0:{video_stream.get('index', 0)}"
     copied = kind == "video" and is_browser_friendly_mp4(extract_media_profile(probe), probe)
-    cmd = ["ffmpeg", "-y", "-i", str(raw_path)]
+    cmd = ["ffmpeg", "-y", "-nostats", "-stats_period", "0.5", "-progress", "pipe:1", "-i", str(raw_path)]
     if kind == "audio":
         cmd += ["-vn", "-c:a", "aac", "-b:a", "160k"]
     elif copied:
@@ -897,16 +918,46 @@ async def _convert_import_file(raw_path: Path, output_path: Path,
         cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"] if has_audio else ["-an"]
     cmd += ["-movflags", "+faststart", str(output_path)]
     process = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    stderr_tail = bytearray()
+
+    async def read_errors():
+        while chunk := await process.stderr.read(4096):
+            stderr_tail.extend(chunk)
+            del stderr_tail[:-4096]
+
+    async def read_progress():
+        packet = {}
+        while line := await process.stdout.readline():
+            key, separator, value = line.decode("utf-8", errors="replace").strip().partition("=")
+            if separator:
+                packet[key] = value
+            if key == "progress" and on_progress:
+                try:
+                    seconds = max(0, float(packet.get("out_time_us", packet.get("out_time_ms", "0"))) / 1_000_000)
+                except ValueError:
+                    seconds = 0
+                try:
+                    speed = float(packet.get("speed", "0").removesuffix("x"))
+                except ValueError:
+                    speed = 0
+                on_progress(seconds, max(0, speed), copied)
+                packet = {}
+
+    readers = [asyncio.create_task(read_errors()), asyncio.create_task(read_progress())]
     try:
-        _, stderr = await process.communicate()
+        await asyncio.gather(*readers)
+        await process.wait()
     except BaseException:
         if process.returncode is None:
             process.kill()
-            await process.communicate()
+        await process.wait()
+        for reader in readers:
+            reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
         raise
     if process.returncode:
-        detail = stderr.decode("utf-8", errors="replace")[-400:]
+        detail = stderr_tail.decode("utf-8", errors="replace")[-400:]
         raise HTTPException(status_code=500, detail=f"Media import failed: {detail}")
     return not copied
 
@@ -947,7 +998,8 @@ def _persist_import(work_key: str, kind: str, title: str, media_type: str,
 
 async def import_media_files(files: list[UploadFile], media_type: str = "movie",
                              cover: UploadFile | None = None, import_mode: str = "create",
-                             target_work_key: str = "", work_name: str = "") -> dict[str, Any]:
+                             target_work_key: str = "", work_name: str = "",
+                             progress: ImportProgress | None = None) -> dict[str, Any]:
     """Shared user/admin import: validate an entire homogeneous batch, stage, then publish."""
     staging = None
     try:
@@ -968,6 +1020,8 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
         staging.mkdir()
         prepared = []
         for index, upload in enumerate(files):
+            if progress:
+                progress.update(phase="analyzing", fileIndex=index + 1, fileCount=len(files), filename=upload.filename or "media")
             suffix = Path(upload.filename or "").suffix.lower()
             if suffix not in ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS:
                 raise HTTPException(status_code=400, detail="Only supported video/audio formats are allowed")
@@ -992,6 +1046,11 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
         kind = prepared[0][3]
         if mode in {"append_audio", "append_video"} and kind != mode.removeprefix("append_"):
             raise HTTPException(status_code=409, detail="Uploaded media does not match the append mode")
+
+        total_seconds = sum(float((entry[2].get("format") or {}).get("duration") or 0) for entry in prepared)
+        completed_seconds = 0
+        if progress:
+            progress.update(phase="queued", percent=0, totalSeconds=total_seconds)
 
         # Serialize publication/imports in this process so concurrent appends cannot mix kinds or names.
         async with _import_lock():
@@ -1027,7 +1086,7 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
             imported = []
             durations = dict(old_meta.get("trackDurations") or {})
             original_names = dict(old_meta.get("originalNames") or {})
-            for original, raw_path, probe, _ in prepared:
+            for index, (original, raw_path, probe, _) in enumerate(prepared):
                 validate_work_key(original)
                 base = Path(original).stem
                 suffix = ".mp4" if kind == "video" else ".m4a"
@@ -1035,12 +1094,29 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
                 if name.casefold() in existing_names:
                     raise HTTPException(status_code=409, detail=f"Media filename already exists in this work: {name}")
                 existing_names.add(name.casefold())
-                transcoded = await _convert_import_file(raw_path, output_dir / name, kind, probe)
-                durations[name] = float((probe.get("format") or {}).get("duration") or 0)
+                file_seconds = float((probe.get("format") or {}).get("duration") or 0)
+
+                def report(seconds, speed, copied):
+                    processed = min(seconds, file_seconds) if file_seconds > 0 else seconds
+                    overall = completed_seconds + processed
+                    if progress:
+                        progress.update(phase="converting", fileIndex=index + 1, fileCount=len(prepared), filename=original,
+                                        operation="remuxing" if copied else "transcoding", processedSeconds=processed,
+                                        durationSeconds=file_seconds, speed=speed,
+                                        filePercent=min(100, processed / file_seconds * 100) if file_seconds > 0 else None,
+                                        percent=min(99, overall / total_seconds * 99) if total_seconds > 0 else 0,
+                                        etaSeconds=max(0, (total_seconds - overall) / speed) if speed > 0 else None)
+
+                report(0, 0, kind == "video" and is_browser_friendly_mp4(extract_media_profile(probe), probe))
+                transcoded = await _convert_import_file(raw_path, output_dir / name, kind, probe, report)
+                completed_seconds += file_seconds
+                durations[name] = file_seconds
                 original_names[name] = original
                 imported.append({"filename": original, "url": media_url_from_work(work_key, name, work_category(work_dir)),
                                  "profile": extract_media_profile(probe), "transcoded": transcoded})
             if not append or not (work_dir / "cover.jpg").exists():
+                if progress:
+                    progress.update(phase="cover", percent=99, etaSeconds=None)
                 if cover:
                     await asyncio.to_thread(_save_uploaded_cover, output_dir, cover)
                 else:
@@ -1054,6 +1130,8 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
             old_meta_bytes = (work_dir / ".meta.json").read_bytes() if append and (work_dir / ".meta.json").exists() else None
             published = []
             published_work = False
+            if progress:
+                progress.update(phase="saving", percent=99, etaSeconds=None)
             try:
                 if append:
                     for path in output_dir.iterdir():
@@ -1079,6 +1157,8 @@ async def import_media_files(files: list[UploadFile], media_type: str = "movie",
                 elif published_work:
                     work_dir.replace(output_dir)
                 raise
+            if progress:
+                progress.finish()
             return {
                 **result, "ok": True, "imported": len(imported), "count": len(imported),
                 "failed": 0, "errors": [], "items": imported, "batch": len(imported) > 1,

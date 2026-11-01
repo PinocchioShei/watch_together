@@ -1,6 +1,6 @@
 // One import workflow for user and administrator pages; only endpoint/auth differ.
 export function createImportForm({ form, api, endpoint, targetsPath, upload,
-  estimateSeconds, onStart, onProcessing, onSuccess, onError }) {
+  onStart, onProcessing, onSuccess, onError }) {
   const field = (name) => form.querySelector(`[name="${name}"]`);
   const files = field("file");
   const mode = field("import_mode");
@@ -68,6 +68,9 @@ export function createImportForm({ form, api, endpoint, targetsPath, upload,
     if (busy) return;
     const selected = Array.from(files.files || []);
     const append = mode.value === "append";
+    let tracking = false;
+    let timer = null;
+    let lastProgress = { phase: "waiting", percent: 0 };
     try {
       if (!selected.length || selected.length > maxFiles) throw new Error(`Choose 1 to ${maxFiles} media files.`);
       if (append && !target.value) throw new Error("Choose an existing video or audio collection first.");
@@ -84,9 +87,31 @@ export function createImportForm({ form, api, endpoint, targetsPath, upload,
       }
       busy = true;
       submit.disabled = true;
-      const estimate = selected.reduce((total, file) => total + estimateSeconds(file), 0);
       onStart();
-      const result = await upload(endpoint, data, () => onProcessing(estimate));
+      const job = await api(endpoint + "/jobs", { method: "POST" });
+      data.append("job_id", job.jobId);
+      const poll = async () => {
+        if (!tracking) return;
+        try {
+          const progress = await api(endpoint + "/jobs/" + encodeURIComponent(job.jobId), { method: "GET" });
+          if (!tracking) return;
+          lastProgress = progress;
+          onProcessing(progress);
+          if (progress.status === "complete" || progress.status === "failed") return;
+        } catch {
+          if (!tracking) return;
+          onProcessing({ ...lastProgress, connectionLost: true });
+        }
+        if (tracking) timer = setTimeout(poll, 700);
+      };
+      const result = await upload(endpoint, data, () => {
+        if (tracking) return;
+        tracking = true;
+        onProcessing(lastProgress);
+        poll();
+      });
+      tracking = false;
+      clearTimeout(timer);
       if (!result.ok) throw new Error(result.errors?.map((item) => item.detail).join("; ") || "Import failed.");
       files.value = "";
       cover.value = "";
@@ -96,12 +121,43 @@ export function createImportForm({ form, api, endpoint, targetsPath, upload,
     } catch (error) {
       onError(error);
     } finally {
+      tracking = false;
+      clearTimeout(timer);
       busy = false;
       submit.disabled = false;
     }
   });
   update();
   return { refreshTargets };
+}
+
+function mediaTime(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+}
+
+export function formatImportProgress(progress) {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const file = progress.filename ? ` · ${progress.fileIndex}/${progress.fileCount} ${progress.filename}` : "";
+  let text;
+  switch (progress.phase) {
+    case "analyzing": text = `Analyzing media${file}`; break;
+    case "queued": text = "Waiting for another import to finish..."; break;
+    case "converting": {
+      const stage = progress.operation === "remuxing" ? "Preparing media" : "Transcoding";
+      text = `${stage} ${percent.toFixed(1)}%${file} · ${mediaTime(progress.processedSeconds)} / ${mediaTime(progress.durationSeconds)}`;
+      if (Number(progress.speed) > 0) text += ` · ${Number(progress.speed).toFixed(2)}x`;
+      if (progress.etaSeconds != null && Number.isFinite(Number(progress.etaSeconds))) text += ` · ~${mediaTime(progress.etaSeconds)} remaining`;
+      break;
+    }
+    case "cover": text = "Generating cover..."; break;
+    case "saving": text = "Saving media..."; break;
+    case "complete": text = "Import complete."; break;
+    case "failed": text = progress.error || "Import failed."; break;
+    default: text = "Upload complete. Waiting for server processing...";
+  }
+  if (progress.connectionLost) text += " · Waiting for progress update...";
+  return { percent, text };
 }
 
 export function importResultMessage(result) {

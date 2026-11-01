@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import unittest
 import wave
 
@@ -57,6 +58,31 @@ class CollectionBrowserTests(unittest.TestCase):
         self.assertEqual(uploaded.value.status, 200, uploaded.value.text())
         return uploaded.value.json()
 
+    def test_upload_displays_real_server_progress_on_both_pages(self):
+        self.errors = []
+        f = self.fixture
+        source = f.site / "browser-progress.mov"
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=s=960x540:r=30:d=35",
+                        "-c:v", "mpeg4", "-q:v", "5", str(source)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        for admin in (False, True):
+            page = self.page(f.admin if admin else f.owner, admin=admin)
+            if admin:
+                expect(page.locator("#dashboard")).to_be_visible()
+                page.locator("button[data-tab=media]").click()
+            else:
+                expect(page.locator("#appPanel")).to_be_visible()
+            progress_id = "adminImportProgressText" if admin else "importProgressText"
+            page.evaluate("id => { window.progressHistory=[]; const node=document.getElementById(id); new MutationObserver(() => window.progressHistory.push(node.textContent)).observe(node,{childList:true,subtree:true,characterData:true}); }", progress_id)
+            page.locator("#importFile" if admin else "#videoFileInput").set_input_files(self.media_file(f"Browser progress {admin}.mov", source.read_bytes(), "video/quicktime"))
+            page.locator("#importType" if admin else "#importTypeSelect").select_option("movie")
+            result = self.upload(page, admin=admin)
+            self.assertEqual(result["mediaKind"], "video")
+            history = page.evaluate("window.progressHistory")
+            self.assertTrue(any("Transcoding" in text and "remaining" in text and "x" in text for text in history), history)
+            self.assertFalse(any("taking longer than estimate" in text for text in history), history)
+        self.assertEqual(self.errors, [])
+
     def test_upload_and_two_user_video_audio_collection_playback(self):
         self.errors = []
         f = self.fixture
@@ -101,6 +127,13 @@ class CollectionBrowserTests(unittest.TestCase):
         expect(audio_card.locator(".admin-media-name")).to_have_text(audio_work)
         expect(audio_card.locator(".state-badge")).to_have_text("audio")
         expect(admin.locator(".state-badge.yes, .state-badge.no")).to_have_count(0)
+        # Filtering uses the current library immediately, without another library request.
+        media_requests = []
+        admin.on("request", lambda request: media_requests.append(request.url) if request.url.endswith("/api/admin/media") else None)
+        for category, work in (("music", audio_work), ("movie", video_work), ("all", audio_work)):
+            admin.locator("#mediaTypeFilter").select_option(category)
+            expect(admin.locator(".admin-media-card").filter(has_text=work)).to_be_visible()
+        self.assertEqual(media_requests, [])
 
         # Both actual forms append to the same video work with the same request model.
         for page, is_admin, mode_id, target_id, file_id, filename in (
@@ -146,6 +179,8 @@ class CollectionBrowserTests(unittest.TestCase):
         expect(peer.locator("#roomPanel")).to_be_visible()
         expect(peer.locator("#collectionTrackSelect")).to_have_value("1")
         peer.wait_for_function("document.getElementById('videoPlayer').readyState >= 2")
+        # Let the join/restore media events settle before simulating a new native seek.
+        owner.wait_for_timeout(400)
         owner.evaluate("document.getElementById('videoPlayer').currentTime = 1.4")
         peer.wait_for_function("Math.abs(document.getElementById('videoPlayer').currentTime - 1.4) < 0.35")
 

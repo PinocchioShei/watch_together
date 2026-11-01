@@ -1,8 +1,8 @@
-import { collectionTracks, collectionMode, collectionLabel } from "./js/app/collections.js?v=20261101f";
-import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101f";
+import { collectionTracks, collectionMode, collectionLabel } from "./js/app/collections.js?v=20261101g";
+import { createImportForm, importResultMessage, formatImportProgress } from "./js/app/import-form.js?v=20261101g";
 import { normalizeUrl, toMediaPath } from "./js/shared/format.js";
 import { clearRoomSession, createTabLock, readRoomSession, saveRoomSession } from "./js/app/session.js";
-import { createApiClient } from "./js/app/api-client.js?v=20261101f";
+import { createApiClient } from "./js/app/api-client.js?v=20261101g";
 import { createAuthModule } from "./js/app/auth-module.js";
 import { createLobbyModule } from "./js/app/lobby-module.js";
 import { createChatModule } from "./js/app/chat-module.js";
@@ -88,7 +88,6 @@ let chatModule = null;
 let loadRooms = async () => [];
 let tryRestoreRoom = async () => {};
 let guestAuthOpen = false;
-let importProcessingTimer = null;
 const DEBUG_SYNC = true;
 
 function syncDebug(event, fields = {}) {
@@ -170,53 +169,8 @@ function setImportProgress(percent, text = "") {
   importProgressText.textContent = text || `${Math.round(clamped)}%`;
 }
 
-function estimateServerProcessingSeconds(file) {
-  const sizeMb = Math.max(1, Math.round((Number(file?.size || 0) / 1024 / 1024)));
-  const mime = String(file?.type || "").toLowerCase();
-  const name = String(file?.name || "").toLowerCase();
-  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg|flac)$/.test(name);
-  if (isAudio) {
-    return Math.max(10, Math.min(240, Math.round(sizeMb * 0.35 + 8)));
-  }
-  return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
-}
-
-function startImportProcessingTicker(estimatedSeconds = 0) {
-  if (!importProgressWrap || !importProgressBar || !importProgressText) return;
-  if (importProcessingTimer) return;
-  importProgressWrap.classList.add("processing");
-  importProgressWrap.classList.remove("hidden");
-  importProgressBar.style.width = "100%";
-  const startedAt = Date.now();
-  const labels = ["Analyzing", "Transcoding", "Generating cover", "Saving"];
-  const phaseSpan = estimatedSeconds > 0
-    ? Math.max(8, Math.round(estimatedSeconds / labels.length))
-    : 12;
-  importProcessingTimer = setInterval(() => {
-    const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-    const phaseIndex = Math.min(labels.length - 1, Math.floor(sec / phaseSpan));
-    const phase = labels[phaseIndex];
-    if (estimatedSeconds > 0 && sec <= estimatedSeconds) {
-      const left = Math.max(0, estimatedSeconds - sec);
-      importProgressText.textContent = `${phase} on server... ${sec}s elapsed, ~${left}s remaining`;
-    } else if (estimatedSeconds > 0) {
-      importProgressText.textContent = `${phase} on server... ${sec}s elapsed (taking longer than estimate)`;
-    } else {
-      importProgressText.textContent = `${phase} on server... ${sec}s`;
-    }
-  }, 900);
-}
-
-function stopImportProcessingTicker() {
-  if (!importProcessingTimer) return;
-  clearInterval(importProcessingTimer);
-  importProcessingTimer = null;
-}
-
-
 function hideImportProgress() {
   if (!importProgressWrap || !importProgressBar || !importProgressText) return;
-  stopImportProcessingTicker();
   importProgressWrap.classList.add("hidden");
   importProgressWrap.classList.remove("processing");
   importProgressBar.style.width = "0%";
@@ -233,6 +187,13 @@ function xhrUpload(url, formData, onServerProcessingStart = null) {
       xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
     }
     xhr.timeout = 15 * 60 * 1000;
+    xhr.upload.onload = () => {
+      xhr.timeout = 0;
+      if (!processingStarted) {
+        processingStarted = true;
+        if (typeof onServerProcessingStart === "function") onServerProcessingStart();
+      }
+    };
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable) {
         const p = (ev.loaded / ev.total) * 100;
@@ -1192,18 +1153,17 @@ tabRegister.onclick = () => showTab("register");
 
 const importController = createImportForm({
   form: importForm, api, endpoint: "/api/import", targetsPath: "/api/media/append-targets",
-  upload: xhrUpload, estimateSeconds: estimateServerProcessingSeconds,
+  upload: xhrUpload,
   onStart: () => {
     hideImportProgress();
     setImportProgress(0, "Preparing upload...");
     setLobbyStatus("Importing collection...");
   },
-  onProcessing: (seconds) => {
-    startImportProcessingTicker(seconds);
-    setLobbyStatus("Upload complete. Processing media, please wait...");
+  onProcessing: (progress) => {
+    const display = formatImportProgress(progress);
+    setImportProgress(display.percent, display.text);
   },
   onSuccess: async (result) => {
-    stopImportProcessingTicker();
     setImportProgress(100, "Import complete.");
     setLobbyStatus(importResultMessage(result));
     setMediaStatus(importResultMessage(result));

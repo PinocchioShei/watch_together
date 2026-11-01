@@ -147,6 +147,16 @@ class CollectionIntegrationTests(unittest.TestCase):
         self.assertEqual(result["audioTracks"], [])
         self.assertEqual(result["audioUrl"], "")
         self.assertEqual(list(self.local_path(result["videoUrl"]).parent.glob("*.m4a")), [])
+        with urllib.request.urlopen(self.origin + result["coverUrl"]) as response:
+            etag = response.headers["ETag"]
+        self.assertEqual(self.request(result["videoUrl"], method="HEAD")[0], 200)
+        try:
+            urllib.request.urlopen(urllib.request.Request(self.origin + result["coverUrl"], headers={"If-None-Match": etag}))
+        except urllib.error.HTTPError as response:
+            with response:
+                self.assertEqual(response.code, 304)
+        else:
+            self.fail("Unchanged cover should return HTTP 304")
         self.assert_clean_staging()
 
     def test_audio_keeps_original_display_name_after_conversion(self):

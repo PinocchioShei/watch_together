@@ -428,6 +428,7 @@ button:hover { border-color: var(--accent); }
 }
 
 .import-progress-text {
+  overflow-wrap: anywhere;
   font-size: 12px;
   color: #b42373;
   letter-spacing: 0.2px;

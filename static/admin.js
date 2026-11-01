@@ -1,4 +1,4 @@
-import { createImportForm, importResultMessage } from "./js/app/import-form.js?v=20261101f";
+import { createImportForm, importResultMessage, formatImportProgress } from "./js/app/import-form.js?v=20261101g";
 import { escapeHtml, formatBytes } from "./js/admin/helpers.js";
 
 const state = {
@@ -37,8 +37,9 @@ const tabPanels = {
   rooms: document.getElementById("tab-rooms"),
 };
 let mediaItems = [];
+let allMediaItems = [];
+let mediaLoadVersion = 0;
 let activeMediaItem = null;
-let adminImportProcessingTimer = null;
 
 function applyTheme(theme) {
   const next = theme === "dark" ? "dark" : "light";
@@ -285,56 +286,12 @@ function setAdminImportProgress(percent, text = "") {
   adminImportProgressText.textContent = text || `${Math.round(clamped)}%`;
 }
 
-function stopAdminImportProcessingTicker() {
-  if (!adminImportProcessingTimer) return;
-  clearInterval(adminImportProcessingTimer);
-  adminImportProcessingTimer = null;
-}
-
 function hideAdminImportProgress() {
   if (!adminImportProgressWrap || !adminImportProgressBar || !adminImportProgressText) return;
-  stopAdminImportProcessingTicker();
   adminImportProgressWrap.classList.add("hidden");
   adminImportProgressWrap.classList.remove("processing");
   adminImportProgressBar.style.width = "0%";
   adminImportProgressText.textContent = "0%";
-}
-
-function estimateServerProcessingSeconds(file) {
-  const sizeMb = Math.max(1, Math.round((Number(file?.size || 0) / 1024 / 1024)));
-  const mime = String(file?.type || "").toLowerCase();
-  const name = String(file?.name || "").toLowerCase();
-  const isAudio = mime.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg|flac)$/.test(name);
-  if (isAudio) {
-    return Math.max(10, Math.min(240, Math.round(sizeMb * 0.35 + 8)));
-  }
-  return Math.max(20, Math.min(900, Math.round(sizeMb * 0.85 + 18)));
-}
-
-function startAdminImportProcessingTicker(estimatedSeconds = 0) {
-  if (!adminImportProgressWrap || !adminImportProgressBar || !adminImportProgressText) return;
-  if (adminImportProcessingTimer) return;
-  adminImportProgressWrap.classList.add("processing");
-  adminImportProgressWrap.classList.remove("hidden");
-  adminImportProgressBar.style.width = "100%";
-  const startedAt = Date.now();
-  const labels = ["Analyzing", "Transcoding", "Generating cover", "Saving"];
-  const phaseSpan = estimatedSeconds > 0
-    ? Math.max(8, Math.round(estimatedSeconds / labels.length))
-    : 12;
-  adminImportProcessingTimer = setInterval(() => {
-    const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-    const phaseIndex = Math.min(labels.length - 1, Math.floor(sec / phaseSpan));
-    const phase = labels[phaseIndex];
-    if (estimatedSeconds > 0 && sec <= estimatedSeconds) {
-      const left = Math.max(0, estimatedSeconds - sec);
-      adminImportProgressText.textContent = `${phase} on server... ${sec}s elapsed, ~${left}s remaining`;
-    } else if (estimatedSeconds > 0) {
-      adminImportProgressText.textContent = `${phase} on server... ${sec}s elapsed (taking longer than estimate)`;
-    } else {
-      adminImportProgressText.textContent = `${phase} on server... ${sec}s`;
-    }
-  }, 900);
 }
 
 function xhrUpload(url, formData, onServerProcessingStart = null) {
@@ -347,6 +304,13 @@ function xhrUpload(url, formData, onServerProcessingStart = null) {
       xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
     }
     xhr.timeout = 15 * 60 * 1000;
+    xhr.upload.onload = () => {
+      xhr.timeout = 0;
+      if (!processingStarted) {
+        processingStarted = true;
+        if (typeof onServerProcessingStart === "function") onServerProcessingStart();
+      }
+    };
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable) {
         const p = (ev.loaded / ev.total) * 100;
@@ -430,8 +394,15 @@ async function loadUsers() {
 }
 
 async function loadMedia() {
+  const version = ++mediaLoadVersion;
   const data = await api("/api/admin/media", { method: "GET" });
-  const rows = data.items || [];
+  if (version !== mediaLoadVersion) return;
+  allMediaItems = data.items || [];
+  renderMedia();
+}
+
+function renderMedia() {
+  const rows = allMediaItems;
   const selectedType = mediaTypeFilter ? (mediaTypeFilter.value || "movie") : "movie";
   const visible = selectedType === "all"
     ? rows
@@ -574,9 +545,7 @@ tabButtons.forEach((btn) => {
 
 if (mediaTypeFilter) {
   mediaTypeFilter.value = mediaTypeFilter.value || "movie";
-  mediaTypeFilter.onchange = async () => {
-    await loadMedia();
-  };
+  mediaTypeFilter.onchange = renderMedia;
 }
 
 if (mediaDetailClose) {
@@ -682,18 +651,17 @@ document.getElementById("updateAdminForm").onsubmit = async (e) => {
 const importController = createImportForm({
   form: document.getElementById("importForm"), api,
   endpoint: "/api/admin/import", targetsPath: "/api/admin/media/append-targets",
-  upload: xhrUpload, estimateSeconds: estimateServerProcessingSeconds,
+  upload: xhrUpload,
   onStart: () => {
     hideAdminImportProgress();
     setAdminImportProgress(0, "Preparing upload...");
     setImportMsg("Importing collection...");
   },
-  onProcessing: (seconds) => {
-    startAdminImportProcessingTicker(seconds);
-    setImportMsg("Upload complete. Processing media, please wait...");
+  onProcessing: (progress) => {
+    const display = formatImportProgress(progress);
+    setAdminImportProgress(display.percent, display.text);
   },
   onSuccess: async (result) => {
-    stopAdminImportProcessingTicker();
     setAdminImportProgress(100, "Import complete.");
     setImportMsg(importResultMessage(result));
     await loadMedia();

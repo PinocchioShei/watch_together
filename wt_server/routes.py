@@ -40,6 +40,7 @@ from .config import (
     SYNC_LOG_FILE,
 )
 from .media import (
+    work_directory_index,
     _import_lock,
     _split_media_url,
     backfill_work_meta,
@@ -57,6 +58,7 @@ from .media import (
     remove_media_by_stem,
     stem_from_media_url,
 )
+from .import_progress import ImportProgress, create_job, read_job, admin_owner
 from .schemas import (
     AdminCreateUserPayload,
     AdminLoginPayload,
@@ -163,13 +165,22 @@ def ensure_room_member(room_id: int, user_id: int) -> None:
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    @app.get("/media/work/{media_path:path}", include_in_schema=False)
-    def work_media_response(media_path: str):
+    media_files = StaticFiles(directory=str(MEDIA_DIR))
+
+    @app.api_route("/media/work/{media_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+    def work_media_response(media_path: str, request: Request):
         from urllib.parse import quote, unquote
         incoming = "/media/work/" + quote(media_path, safe="/")
         if not _split_media_url(incoming):
             raise HTTPException(status_code=404, detail="Media not found")
-        canonical = normalize_media_url(incoming)
+        physical = MEDIA_DIR.parent / unquote(incoming).lstrip("/")
+        if not physical.resolve().is_relative_to(MEDIA_DIR.resolve()):
+            raise HTTPException(status_code=404, detail="Media not found")
+        if physical.is_file():
+            # Canonical media/cover requests need no library scan. Keep HTTP cache/Range handling.
+            return media_files.file_response(physical, physical.stat(), request.scope)
+        with work_directory_index():
+            canonical = normalize_media_url(incoming)
         if not canonical:
             raise HTTPException(status_code=404, detail="Media not found")
         physical = MEDIA_DIR.parent / unquote(canonical).lstrip("/")
@@ -177,9 +188,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Media not found")
         if canonical != incoming:
             return RedirectResponse(canonical, status_code=307)
-        return FileResponse(physical)
+        return media_files.file_response(physical, physical.stat(), request.scope)
 
-    app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+    app.mount("/media", media_files, name="media")
     if RESOURCE_DIR.exists():
         app.mount(
             "/resource", StaticFiles(directory=str(RESOURCE_DIR)), name="resource"
@@ -513,6 +524,31 @@ def create_app() -> FastAPI:
         )
         return {"ok": True, "roomId": room_id}
 
+    async def run_import(owner, job_id, file, media_type, cover, import_mode, target_work_key, work_name):
+        progress = ImportProgress(owner, job_id) if job_id else None
+        try:
+            return await import_media_files(file, media_type, cover, import_mode, target_work_key, work_name, progress)
+        except BaseException as error:
+            if progress:
+                progress.fail(error)
+            raise
+
+    @app.post("/api/admin/import/jobs")
+    def admin_create_import_job(admin: str = Depends(require_admin)):
+        return create_job(admin_owner(admin))
+
+    @app.get("/api/admin/import/jobs/{job_id}")
+    def admin_import_job(job_id: str, admin: str = Depends(require_admin)):
+        return read_job(admin_owner(admin), job_id)
+
+    @app.post("/api/import/jobs")
+    def user_create_import_job(user: User = Depends(require_user)):
+        return create_job(f"user:{user.id}")
+
+    @app.get("/api/import/jobs/{job_id}")
+    def user_import_job(job_id: str, user: User = Depends(require_user)):
+        return read_job(f"user:{user.id}", job_id)
+
     @app.post("/api/admin/import")
     async def admin_import(
         file: list[UploadFile] = File(...),
@@ -521,9 +557,10 @@ def create_app() -> FastAPI:
         target_work_key: str = Form(""),
         work_name: str = Form(""),
         cover: UploadFile | None = File(default=None),
-        _: str = Depends(require_admin),
+        job_id: str = Form(""),
+        admin: str = Depends(require_admin),
     ):
-        return await import_media_files(file, media_type, cover, import_mode, target_work_key, work_name)
+        return await run_import(admin_owner(admin), job_id, file, media_type, cover, import_mode, target_work_key, work_name)
 
 
     @app.post("/api/register")
@@ -905,9 +942,10 @@ def create_app() -> FastAPI:
         target_work_key: str = Form(""),
         work_name: str = Form(""),
         cover: UploadFile | None = File(default=None),
+        job_id: str = Form(""),
         user: User = Depends(require_user),
     ):
-        return await import_media_files(file, media_type, cover, import_mode, target_work_key, work_name)
+        return await run_import(f"user:{user.id}", job_id, file, media_type, cover, import_mode, target_work_key, work_name)
 
 
     @app.websocket("/ws/rooms/{room_id}")

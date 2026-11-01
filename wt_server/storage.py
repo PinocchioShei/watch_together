@@ -115,6 +115,14 @@ def init_db() -> None:
             password_hash TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS import_jobs (
+            id TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            status TEXT NOT NULL,
+            progress TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
         """
     )
 

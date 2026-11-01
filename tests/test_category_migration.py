@@ -94,6 +94,20 @@ class CategoryMigrationTests(unittest.TestCase):
         self.assertTrue((directory / "Film.mp4").exists())
         self.assertFalse(self.backup.exists())
 
+    def test_library_reuses_directory_snapshot_and_next_read_sees_moves(self):
+        for index in range(12):
+            self.work(f"movie/Film {index}", {"Film.mp4": self.video}, {"mediaType": "movie"})
+        with closing(sqlite3.connect(self.root / "watch_together.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            with patch.object(media, "iter_work_dirs", wraps=media.iter_work_dirs) as scans:
+                self.assertEqual(len(media.list_media_library(conn)), 12)
+                self.assertLessEqual(scans.call_count, 2)
+            (self.root / "media/work/ASMR").mkdir()
+            (self.root / "media/work/movie/Film 0").rename(self.root / "media/work/ASMR/Film 0")
+            item = next(p for p in media.list_media_library(conn) if p["workKey"] == "Film 0")
+            self.assertEqual(item["type"], "ASMR")
+            self.assertIn("/work/ASMR/", item["videoUrl"])
+
     def test_legacy_cleanup_also_understands_categorized_directories(self):
         self.work("music/Source.flac", {"Source.m4a": self.audio},
                   {"mediaType": "music", "originalNames": {"Source.m4a": "Source.flac"}})

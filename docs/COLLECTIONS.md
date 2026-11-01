@@ -53,6 +53,7 @@ media/work/
 | `work_name` | create 多文件时必填；单文件按上传文件名去掉媒体扩展名命名，不使用此字段 |
 | `target_work_key` | append 时必填，取追加目标接口返回的 workKey |
 | `cover` | create 可选；append 不接受封面 |
+| `job_id` | 可选；上传前创建的进度任务 ID，必须属于当前身份且未使用。不传时兼容原有上传调用 |
 
 示例使用 curl.exe；TOKEN、文件路径和目标名称需替换为实际值：
 
@@ -75,6 +76,21 @@ curl.exe http://127.0.0.1:8090/api/admin/import `
 
 成功响应含 `ok`、`workKey`、`mediaKind`、`videoUrl`、`audioUrl`、`videoTracks`、`audioTracks`、`imported`、`items` 和 `appendMode`。本次全部成功后才返回 `ok=true`；批量处理不再采用旧版的部分成功语义。主要失败状态：400 无效媒体、401 未认证、404 追加目标不存在、409 混存或名称冲突、413 单文件过大、422 字段/数量/名称不合法。
 
+## 上传与处理进度
+
+用户和管理页面都先创建进度任务，再上传文件并轮询服务端状态：
+
+| 身份 | 创建任务 | 查询进度 |
+| --- | --- | --- |
+| 用户 | `POST /api/import/jobs` | `GET /api/import/jobs/{jobId}` |
+| 管理员 | `POST /api/admin/import/jobs` | `GET /api/admin/import/jobs/{jobId}` |
+
+创建任务返回 `jobId`，随原上传请求的 `job_id` 字段提交。创建、上传、查询使用同一身份认证；其他用户或另一管理员会话不能读取、使用该任务。任务 ID 只能使用一次。任务记录在 SQLite 的 import_jobs 中，支持使用同一数据库的进程读取，过期记录在创建新任务时清理（24 小时无更新）。
+
+浏览器先显示实际网络上传进度；文件发送完成后，约每 700ms 查询一次处理进度。阶段为 waiting、analyzing、queued、converting、cover、saving，最后 complete 或 failed。converting 返回当前原始 filename、fileIndex/fileCount、processedSeconds/durationSeconds、speed、etaSeconds 和按整批媒体时长计算的 percent。处理时长和速度来自 ffmpeg `-progress` 输出（约 500ms 一次），ETA 随实际速度更新；无有效速度时不提供剩余时间。准备兼容视频时可能只进行封装转换，页面显示 Preparing media。百分比在最终发布前最多为 99%，保存完成后为 100%。封面和保存阶段显示真实阶段名称，不按计时器猜测阶段。
+
+网络上传保留 15 分钟浏览器超时，发送完成后不再用该时限截断服务端处理。代理仍须允许较长上传请求持续等待响应；轮询进度不会绕过代理的主请求超时。浏览器轮询失败会提示等待更新并重试，不把进度查询短暂失败当成上传失败。此功能没有将导入改为脱离请求的后台任务。
+
 ## 媒体库和同步
 
 `GET /api/media` 和管理员媒体列表都返回每个 work 的：
@@ -82,6 +98,8 @@ curl.exe http://127.0.0.1:8090/api/admin/import `
 - `workKey`、`mediaKind`（video / audio / 历史 mixed）。
 - `videoTracks` 或 `audioTracks`：按自然顺序排列的可播放 URL。videoUrl/audioUrl 为默认资源，保留旧客户端兼容。
 - `originalNames`：URL 到原始完整文件名的映射，用于显示转码前的名称。
+
+一次媒体列表/追加目标查询共用一份作品目录索引，查询结束即释放，后续查询会看到其他进程的文件变更。管理页切换分类直接筛选已加载列表，不重新扫描服务器；点击 Refresh、上传成功、改名、改分类、删除后会重新请求数据。媒体和封面直链直接定位文件，保留 HTTP Range、HEAD 和 ETag/Last-Modified 条件缓存。
 
 历史整理时若原始上传文件名已经丢失，originalNames 使用明确记录的回退名称，迁移来源保存在 .meta.json 的 legacyMigration 中；无法从旧通用名还原源文件名。
 
